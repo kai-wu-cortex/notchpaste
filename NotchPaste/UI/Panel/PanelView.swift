@@ -22,15 +22,15 @@ final class PanelViewModel: ObservableObject {
     private let store: ClipboardStore
     private let paster: PasteService
     private let preferences: PreferencesStore
-    /// 关闭面板回调，返回打开面板时记录的"原前台应用"，供粘贴时激活回去。
-    private let onCommit: () -> NSRunningApplication?
+    /// 关闭面板回调，返回打开面板时记录的粘贴目标，供粘贴时恢复焦点。
+    private let onCommit: () -> PasteTarget?
     private var cancellables = Set<AnyCancellable>()
 
     init(
         store: ClipboardStore,
         paster: PasteService,
         preferences: PreferencesStore = .shared,
-        onCommit: @escaping () -> NSRunningApplication?
+        onCommit: @escaping () -> PasteTarget?
     ) {
         self.store = store
         self.paster = paster
@@ -84,8 +84,8 @@ final class PanelViewModel: ObservableObject {
 
         let shouldClose = preferences.closeAfterCopy || preferences.autoPasteEnabled
         if shouldClose {
-            let targetApp = onCommit()
-            paster.paste(item, activating: targetApp)
+            let target = onCommit()
+            paster.paste(item, activating: target)
         } else {
             // 不关面板：仅写剪贴板，不注入 ⌘V（注入了焦点也不在用户的 app 上）
             paster.paste(item, activating: nil)

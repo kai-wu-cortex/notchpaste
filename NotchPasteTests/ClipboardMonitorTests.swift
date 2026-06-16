@@ -36,4 +36,106 @@ struct ClipboardMonitorTests {
         let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: nil)
         #expect(item == nil)
     }
+
+    @Test("extractItem returns image item for raw PNG data")
+    func extractRawPNGImage() throws {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-rawpng"))
+        pb.clearContents()
+        let png = try makeImageData(type: .png)
+        pb.setData(png, forType: .png)
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: nil)
+
+        if case .image(let data) = item?.type {
+            #expect(NSImage(data: data) != nil)
+        } else {
+            Issue.record("Expected .image")
+        }
+    }
+
+    @Test("extractItem returns image item for raw JPEG data")
+    func extractRawJPEGImage() throws {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-rawjpeg"))
+        pb.clearContents()
+        let jpeg = try makeImageData(type: .jpeg)
+        pb.setData(jpeg, forType: NSPasteboard.PasteboardType("public.jpeg"))
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: nil)
+
+        if case .image(let data) = item?.type {
+            #expect(NSImage(data: data) != nil)
+        } else {
+            Issue.record("Expected .image")
+        }
+    }
+
+    @Test("extractItem returns text item for RTF data")
+    func extractRTFText() throws {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-rtf"))
+        pb.clearContents()
+        let attributed = NSAttributedString(string: "rich copied text")
+        let rtf = try attributed.data(
+            from: NSRange(location: 0, length: attributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        pb.setData(rtf, forType: .rtf)
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: nil)
+
+        if case .text(let text) = item?.type {
+            #expect(text == "rich copied text")
+        } else {
+            Issue.record("Expected .text")
+        }
+    }
+
+    @Test("extractItem returns text item for HTML data")
+    func extractHTMLText() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-html"))
+        pb.clearContents()
+        pb.setString("<p>Copied <strong>HTML</strong> text</p>", forType: .html)
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: nil)
+
+        if case .text(let text) = item?.type {
+            #expect(text == "Copied HTML text")
+        } else {
+            Issue.record("Expected .text")
+        }
+    }
+
+    @Test("pending self-write ignore does not swallow later different clipboard content")
+    func pendingSelfWriteIgnoreDoesNotSwallowLaterDifferentClipboardContent() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-ignore-matching"))
+        pb.clearContents()
+        let monitor = ClipboardMonitor(pasteboard: pb)
+
+        monitor.ignoreNextChange(matching: ClipboardItem.text("self write"))
+        pb.clearContents()
+        pb.setString("external right click copy", forType: .string)
+        let item = monitor.tick()
+
+        if case .text(let text) = item?.type {
+            #expect(text == "external right click copy")
+        } else {
+            Issue.record("Expected .text")
+        }
+    }
+
+    private func makeImageData(type: NSBitmapImageRep.FileType) throws -> Data {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 1,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 4,
+            bitsPerPixel: 32
+        )!
+        rep.setColor(.red, atX: 0, y: 0)
+        return try #require(rep.representation(using: type, properties: [:]))
+    }
 }

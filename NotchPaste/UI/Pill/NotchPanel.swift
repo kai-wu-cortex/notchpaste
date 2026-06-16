@@ -54,6 +54,11 @@ final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    func prepareForBackgroundPaste() {
+        ignoresMouseEvents = true
+        makeFirstResponder(nil)
+    }
+
     deinit {
         if let m = keyMonitor {
             NSEvent.removeMonitor(m)

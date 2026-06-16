@@ -1,6 +1,11 @@
 import Foundation
 import AppKit
+import CryptoKit
 import os
+
+protocol ClipboardChangeIgnoring: AnyObject {
+    func ignoreNextChange(matching item: ClipboardItem)
+}
 
 /// 周期性轮询系统剪贴板（NSPasteboard.general），检测新内容并通过 AsyncStream 发布。
 ///
@@ -11,15 +16,15 @@ import os
 ///   被当成"新复制"再记一遍，造成历史重复 / 死循环。
 /// - 隐私模式：`isMonitoringEnabled = false` 时跳过捕获，但 changeCount 仍然推进，
 ///   避免恢复时把暂停期间累积的内容一次性灌进来。
-final class ClipboardMonitor {
+final class ClipboardMonitor: ClipboardChangeIgnoring {
 
     private let pasteboard: NSPasteboard
     private let interval: TimeInterval
     private var timer: Timer?
     private var lastChangeCount: Int
 
-    /// 待忽略的 changeCount 集合：写入剪贴板后下一次（或几次）变化不做记录。
-    private var ignoredChangeCounts = Set<Int>()
+    /// 待忽略的内容签名：只跳过我们自己刚写入剪贴板的那份内容。
+    private var ignoredContentSignatures = Set<String>()
 
     /// 隐私模式开关。false 时不捕获新内容，但仍跟踪 changeCount。
     var isMonitoringEnabled: Bool = true
@@ -42,7 +47,7 @@ final class ClipboardMonitor {
     func start() {
         guard timer == nil else { return }
         let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.tick()
+            _ = self?.tick()
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -52,38 +57,35 @@ final class ClipboardMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
-        ignoredChangeCounts.removeAll()
+        ignoredContentSignatures.removeAll()
         continuation?.finish()
     }
 
-    /// 标记接下来一次 changeCount 增长不做记录（典型场景：自动粘贴）。
-    /// 多次调用会累计 —— 写入文件 + 模拟 ⌘V 可能产生 2 次 change，调用方按需调用多次。
-    func ignoreNextChange() {
-        // 当前 changeCount 之后的下一次（任意大小）变化都跳过。
-        // 用 +1 + +2 双保险（NSPasteboard 在写多个 representation 时可能 ++2 次）。
-        let current = pasteboard.changeCount
-        ignoredChangeCounts.insert(current + 1)
-        ignoredChangeCounts.insert(current + 2)
+    /// 标记一份由本 app 写入的内容。下一次轮询时，只有剪贴板当前内容仍然匹配它才会跳过；
+    /// 如果用户已经复制了别的内容，就正常捕获，避免吞掉右键复制/按钮复制。
+    func ignoreNextChange(matching item: ClipboardItem) {
+        ignoredContentSignatures.insert(Self.contentSignature(for: item.type))
     }
 
-    private func tick() {
+    @discardableResult
+    func tick() -> ClipboardItem? {
         let current = pasteboard.changeCount
-        guard current != lastChangeCount else { return }
+        guard current != lastChangeCount else { return nil }
         lastChangeCount = current
 
         // 隐私模式：跟踪 changeCount 但不发出 item
-        guard isMonitoringEnabled else { return }
-
-        // 自动粘贴回流过滤
-        if ignoredChangeCounts.remove(current) != nil {
-            AppLogger.clipboard.debug("ignored auto-paste echo at changeCount=\(current, privacy: .public)")
-            return
-        }
+        guard isMonitoringEnabled else { return nil }
 
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        guard let item = Self.extractItem(from: pasteboard, sourceAppBundleID: bundleID) else { return }
+        guard let item = Self.extractItem(from: pasteboard, sourceAppBundleID: bundleID) else { return nil }
+        if ignoredContentSignatures.remove(Self.contentSignature(for: item.type)) != nil {
+            AppLogger.clipboard.debug("ignored self-written clipboard item at changeCount=\(current, privacy: .public)")
+            return nil
+        }
+
         AppLogger.clipboard.debug("New clipboard item captured: \(item.preview, privacy: .private)")
         continuation?.yield(item)
+        return item
     }
 
     /// 从给定 pasteboard 提取一个 ClipboardItem。
@@ -95,20 +97,90 @@ final class ClipboardMonitor {
            !urls.isEmpty {
             return ClipboardItem.file(urls, sourceAppBundleID: sourceAppBundleID)
         }
-        // 2. 图片：app 内 copy image / 截图（NSImage 能读出 → 转 PNG 存）
+        // 2. 图片原始数据：不少右键复制只写 public.png/public.jpeg/public.tiff 等类型。
+        if let item = imageItemFromRawData(pasteboard, sourceAppBundleID: sourceAppBundleID) {
+            return item
+        }
+        // 3. 图片对象：app 内 copy image / 截图（NSImage 能读出 → 转 PNG 存）
         if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
            let nsImage = images.first,
            let png = pngData(from: nsImage) {
             return ClipboardItem.image(png, sourceAppBundleID: sourceAppBundleID)
         }
-        // 3. 文本（先试链接识别，再 fallback 到普通文本）
+        // 4. 文本（先试链接识别，再 fallback 到普通文本）
         if let s = pasteboard.string(forType: .string), !s.isEmpty {
-            if let link = ClipboardItem.parseURL(from: s) {
-                return ClipboardItem.url(raw: s, url: link, sourceAppBundleID: sourceAppBundleID)
-            }
-            return ClipboardItem.text(s, sourceAppBundleID: sourceAppBundleID)
+            return textItem(from: s, sourceAppBundleID: sourceAppBundleID)
+        }
+        if let s = richTextString(from: pasteboard) {
+            return textItem(from: s, sourceAppBundleID: sourceAppBundleID)
         }
         return nil
+    }
+
+    private static func imageItemFromRawData(
+        _ pasteboard: NSPasteboard,
+        sourceAppBundleID: String?
+    ) -> ClipboardItem? {
+        let imageTypes: [NSPasteboard.PasteboardType] = [
+            .png,
+            .tiff,
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.jpg"),
+            NSPasteboard.PasteboardType("public.heic"),
+            NSPasteboard.PasteboardType("public.heif"),
+            NSPasteboard.PasteboardType("org.webmproject.webp"),
+            NSPasteboard.PasteboardType("public.webp")
+        ]
+
+        for type in imageTypes {
+            guard let data = pasteboard.data(forType: type) else { continue }
+            if type == .png, NSImage(data: data) != nil {
+                return ClipboardItem.image(data, sourceAppBundleID: sourceAppBundleID)
+            }
+            if let image = NSImage(data: data), let png = pngData(from: image) {
+                return ClipboardItem.image(png, sourceAppBundleID: sourceAppBundleID)
+            }
+        }
+        return nil
+    }
+
+    private static func richTextString(from pasteboard: NSPasteboard) -> String? {
+        if let html = pasteboard.string(forType: .html),
+           let text = attributedString(from: Data(html.utf8), documentType: .html)?.string {
+            return normalizedRichText(text)
+        }
+        if let htmlData = pasteboard.data(forType: .html),
+           let text = attributedString(from: htmlData, documentType: .html)?.string {
+            return normalizedRichText(text)
+        }
+        if let rtfData = pasteboard.data(forType: .rtf),
+           let text = attributedString(from: rtfData, documentType: .rtf)?.string {
+            return normalizedRichText(text)
+        }
+        return nil
+    }
+
+    private static func attributedString(
+        from data: Data,
+        documentType: NSAttributedString.DocumentType
+    ) -> NSAttributedString? {
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: documentType,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+        return try? NSAttributedString(data: data, options: options, documentAttributes: nil)
+    }
+
+    private static func normalizedRichText(_ text: String) -> String? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func textItem(from text: String, sourceAppBundleID: String?) -> ClipboardItem {
+        if let link = ClipboardItem.parseURL(from: text) {
+            return ClipboardItem.url(raw: text, url: link, sourceAppBundleID: sourceAppBundleID)
+        }
+        return ClipboardItem.text(text, sourceAppBundleID: sourceAppBundleID)
     }
 
     /// 把 NSImage 转成 PNG Data。失败返回 nil。
@@ -118,5 +190,23 @@ final class ClipboardMonitor {
             return nil
         }
         return rep.representation(using: .png, properties: [:])
+    }
+
+    private static func contentSignature(for type: ItemType) -> String {
+        let raw: Data
+        switch type {
+        case .text(let s):
+            raw = Data(("text:" + s).utf8)
+        case .url(_, let url):
+            raw = Data(("url:" + url.absoluteString).utf8)
+        case .file(let urls):
+            raw = Data(("file:" + urls.map(\.path).joined(separator: "|")).utf8)
+        case .image(let data):
+            var prefixed = Data("image:".utf8)
+            prefixed.append(data)
+            raw = prefixed
+        }
+        let digest = SHA256.hash(data: raw)
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -55,8 +55,8 @@ final class NotchViewModel: ObservableObject {
     /// 关闭时刘海上方显示一个红点提示用户。
     @Published var monitoringEnabled: Bool = true
 
-    /// 打开面板时记录的原前台 app；粘贴前激活它，让 ⌘V 注入到正确的目标。
-    var previousFrontmost: NSRunningApplication?
+    /// 打开面板时记录的原粘贴目标；粘贴前恢复它，让 ⌘V 注入到正确输入框。
+    var previousPasteTarget: PasteTarget?
 
     // MARK: - Geometry
 
@@ -168,10 +168,11 @@ final class NotchViewModel: ObservableObject {
     // MARK: - Actions
 
     func notchOpen(reason: NotchOpenReason = .unknown) {
-        // 记录原前台 app（排除自己），关闭面板后用来恢复焦点
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        if frontmost?.bundleIdentifier != Bundle.main.bundleIdentifier {
-            previousFrontmost = frontmost
+        // 仅在从 closed → opened 转换时记录原粘贴目标。
+        // 之后再调用 notchOpen（如 hover 后又点击）不能覆盖：
+        // 因为此时 panel 已经 makeKey，frontmostApplication 可能是我们自己。
+        if status == .closed {
+            previousPasteTarget = PasteTarget.capture()
         }
         openReason = reason
         status = .opened

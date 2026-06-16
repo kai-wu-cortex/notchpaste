@@ -202,11 +202,10 @@ final class ClipboardStore {
         case .all:
             filtered = all
         case .favorite:
-            // 常用 = 已加星（pinned）+ 用过的（usage_count > 0），pinned 优先
+            // 常用 = 已加星（pinned）的项，按使用次数排序，未用过的按加星时间近的在前
             filtered = all
-                .filter { $0.pinned || $0.usageCount > 0 }
+                .filter { $0.pinned }
                 .sorted { lhs, rhs in
-                    if lhs.pinned != rhs.pinned { return lhs.pinned }
                     if lhs.usageCount != rhs.usageCount {
                         return lhs.usageCount > rhs.usageCount
                     }
@@ -259,7 +258,7 @@ final class ClipboardStore {
                        created_at, pinned, source_app_bundle_id,
                        usage_count, last_used_at
                 FROM clipboard_item
-                ORDER BY pinned DESC, created_at DESC
+                ORDER BY created_at DESC
                 """)
             return rows.compactMap(Self.itemFromRow)
         }

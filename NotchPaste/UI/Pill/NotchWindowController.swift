@@ -70,7 +70,7 @@ final class NotchWindowController: NSWindowController {
                     NSApp.activate(ignoringOtherApps: false)
                     panel?.makeKey()
                 case .closed:
-                    panel?.ignoresMouseEvents = true
+                    panel?.prepareForBackgroundPaste()
                 }
             }
             .store(in: &cancellables)

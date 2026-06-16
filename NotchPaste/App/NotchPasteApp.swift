@@ -47,9 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey = HotkeyService()
         notchDetector = NotchAppDetector()
 
-        panelVM = PanelViewModel(store: store, paster: paster) { [weak self] () -> NSRunningApplication? in
-            // 关闭面板，返回打开时记录的原前台 app，供粘贴时激活回去
-            let target = self?.notchController?.viewModel.previousFrontmost
+        panelVM = PanelViewModel(store: store, paster: paster) { [weak self] () -> PasteTarget? in
+            // 关闭面板，返回打开时记录的目标 app 和焦点元素，供粘贴时恢复回去
+            let target = self?.notchController?.viewModel.previousPasteTarget
             self?.notchController?.viewModel.notchClose()
             return target
         }
@@ -197,7 +197,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func forceRequestAccessibility() {
-        paster.openAccessibilityPreferences()
-        AppLogger.paste.info("user requested permission re-prompt; opened pane")
+        paster.requestAccessibilityAndOpenPreferences()
     }
 }

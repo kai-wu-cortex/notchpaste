@@ -35,6 +35,31 @@ struct ClipboardStoreTests {
         #expect(items.map(\.id) == [b.id, a.id])
     }
 
+    @Test("pinned items do not sort above newer recent items")
+    func pinnedItemsDoNotSortAboveNewerRecentItems() throws {
+        let store = try makeStore()
+        let oldPinned = ClipboardItem(
+            id: UUID(),
+            type: .text("old pinned"),
+            createdAt: Date(timeIntervalSince1970: 100),
+            pinned: true,
+            sourceAppBundleID: nil
+        )
+        let newer = ClipboardItem(
+            id: UUID(),
+            type: .text("newer"),
+            createdAt: Date(timeIntervalSince1970: 200),
+            pinned: false,
+            sourceAppBundleID: nil
+        )
+
+        try store.add(oldPinned)
+        try store.add(newer)
+
+        let items = try store.allItems()
+        #expect(items.map(\.id) == [newer.id, oldPinned.id])
+    }
+
     @Test("delete removes by id")
     func deleteById() throws {
         let store = try makeStore()
