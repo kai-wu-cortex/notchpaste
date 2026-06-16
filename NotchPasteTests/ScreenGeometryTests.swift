@@ -60,4 +60,22 @@ struct ScreenGeometryTests {
         #expect(pill.minX == notch.minX - 60)
         #expect(pill.maxY == notch.maxY)
     }
+
+    @Test("notchOverlayWindowFrame spans full screen width and sits flush to screen top")
+    func notchOverlayFrame() {
+        let screen = NSRect(x: 0, y: 0, width: 1512, height: 982)
+        let notch = NSRect(x: 656, y: 950, width: 200, height: 32)
+        let frame = ScreenGeometry.notchOverlayWindowFrame(
+            screenFrame: screen,
+            notch: notch,
+            maxExtraWidth: 100,
+            maxExtraHeight: 60
+        )
+        // 横跨整个屏幕宽度（让 avoidance 形态平移不被截断）
+        #expect(frame.width == screen.width)
+        #expect(frame.minX == screen.minX)
+        // 顶端贴齐屏幕物理顶部
+        #expect(frame.maxY == screen.maxY)
+        #expect(frame.height == notch.height + 60)
+    }
 }
