@@ -2,15 +2,6 @@ import SwiftUI
 import AppKit
 import Combine
 
-@MainActor
-final class PillModel: ObservableObject {
-    struct State: Equatable {
-        var itemCount: Int = 0
-        var copyHint: String? = nil
-    }
-    @Published var state = State()
-}
-
 @main
 struct NotchPasteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -27,14 +18,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var paster: PasteService!
     private var hotkey: HotkeyService!
     private var prefs: PreferencesStore!
+    private var menuBar: MenuBarController!
+    private var notchDetector: NotchAppDetector!
 
-    private var pillWindow: PillWindow!
-    private var panelWindow: PanelWindow?
+    private var notchController: NotchWindowController!
     private var panelVM: PanelViewModel!
-    private let pillModel = PillModel()
 
     private var cancellables = Set<AnyCancellable>()
     private var copyHintTimer: Timer?
+    private var screenChangeObserver: NSObjectProtocol?
+    private var hasPromptedAccessibility = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         prefs = .shared
@@ -47,40 +40,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         paster = PasteService(preferences: prefs)
         monitor = ClipboardMonitor()
+        // 让 paster 能在写剪贴板前通知 monitor 忽略下一次回流
+        paster.monitor = monitor
+        // 隐私模式：根据 prefs 实时切监听开关
+        monitor.isMonitoringEnabled = prefs.monitoringEnabled
         hotkey = HotkeyService()
+        notchDetector = NotchAppDetector()
 
-        panelVM = PanelViewModel(store: store, paster: paster) { [weak self] in
-            self?.panelWindow?.orderOut(nil)
+        panelVM = PanelViewModel(store: store, paster: paster) { [weak self] () -> NSRunningApplication? in
+            // 关闭面板，返回打开时记录的原前台 app，供粘贴时激活回去
+            let target = self?.notchController?.viewModel.previousFrontmost
+            self?.notchController?.viewModel.notchClose()
+            return target
         }
 
-        setupPillWindow()
+        setupMenuBar()
+        setupNotchWindow()
         wireMonitorToStore()
-        wireStoreToPill()
+        wireStoreToPanel()
+        wirePrefsToMonitor()
+        wireDetectorToViewModel()
         wireHotkey()
 
         monitor.start()
+
+        if !paster.isAccessibilityTrusted() && !hasPromptedAccessibility {
+            hasPromptedAccessibility = true
+            _ = paster.isAccessibilityTrusted(promptIfNeeded: true)
+        }
+
+        // 屏幕配置变化（连接显示器、分辨率改变）：重建窗口
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.setupNotchWindow() }
+        }
+
         AppLogger.app.info("NotchPaste launched")
     }
 
     // MARK: - Setup
 
-    private func setupPillWindow() {
-        let pillSize = NSSize(width: 60, height: 24)
-        pillWindow = PillWindow(contentSize: pillSize)
-        pillWindow.setContent(PillContainer(model: pillModel) { [weak self] in
-            self?.togglePanel()
-        })
-
-        if let frame = ScreenGeometry.currentRightPillFrame(pillSize: pillSize) {
-            pillWindow.setFrame(frame, display: true)
-        } else if let screen = NSScreen.main {
-            let f = NSRect(x: screen.frame.maxX - pillSize.width - 8,
-                           y: screen.frame.maxY - pillSize.height - 4,
-                           width: pillSize.width, height: pillSize.height)
-            pillWindow.setFrame(f, display: true)
-        }
-        pillWindow.orderFrontRegardless()
+    private func setupMenuBar() {
+        menuBar = MenuBarController(
+            onShowPanel: { [weak self] in self?.notchController?.viewModel.notchOpen(reason: .click) },
+            onRequestPermission: { [weak self] in self?.forceRequestAccessibility() }
+        )
     }
+
+    private func setupNotchWindow() {
+        guard let screen = NSScreen.builtin else {
+            AppLogger.app.error("No builtin screen")
+            return
+        }
+        // 销毁旧窗口
+        notchController?.close()
+
+        notchController = NotchWindowController(
+            screen: screen,
+            panelVM: panelVM,
+            onRequestPermission: { [weak self] in self?.forceRequestAccessibility() },
+            onQuit: { NSApp.terminate(nil) }
+        )
+        notchController.showWindow(nil)
+        AppLogger.app.info("Notch window set up on screen \(screen.localizedName, privacy: .public)")
+    }
+
+    // MARK: - Wiring
 
     private func wireMonitorToStore() {
         Task { [weak self] in
@@ -88,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for await item in self.monitor.stream {
                 do {
                     try self.store.add(item)
-                    await MainActor.run { self.flashCopyHint(item.preview) }
+                    await MainActor.run { self.flashCopyHint(for: item) }
                 } catch {
                     AppLogger.store.error("add failed: \(error.localizedDescription, privacy: .public)")
                 }
@@ -96,69 +124,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func wireStoreToPill() {
+    private func wireStoreToPanel() {
         store.itemsPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] items in
-                self?.pillModel.state.itemCount = items.count
+                self?.notchController?.viewModel.itemCount = items.count
+            }
+            .store(in: &cancellables)
+    }
+
+    private func wireDetectorToViewModel() {
+        notchDetector.$isOtherNotchAppRunning
+            .receive(on: RunLoop.main)
+            .sink { [weak self] occupied in
+                self?.notchController?.viewModel.avoidanceMode = occupied
+            }
+            .store(in: &cancellables)
+    }
+
+    /// 把偏好里的隐私开关接到 monitor，并把状态同步给 ViewModel 显示。
+    private func wirePrefsToMonitor() {
+        prefs.$monitoringEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.monitor.isMonitoringEnabled = enabled
+                self?.notchController?.viewModel.monitoringEnabled = enabled
+                AppLogger.app.info("monitoring \(enabled ? "enabled" : "disabled", privacy: .public)")
             }
             .store(in: &cancellables)
     }
 
     private func wireHotkey() {
-        hotkey.register { [weak self] in
-            self?.togglePanel()
+        hotkey.register(shortcut: prefs.shortcut) { [weak self] in
+            self?.notchController?.viewModel.toggle()
         }
+        // 偏好里换快捷键 → 实时重注册
+        prefs.$shortcut
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] new in
+                self?.hotkey.updateShortcut(new)
+            }
+            .store(in: &cancellables)
     }
 
-    private func flashCopyHint(_ text: String) {
-        pillModel.state.copyHint = text
+    // MARK: - Helpers
+
+    private func flashCopyHint(for item: ClipboardItem) {
+        let hint: NotchViewModel.CopyHint
+        let duration: TimeInterval
+        switch item.type {
+        case .text(let s):
+            hint = .text(String(s.prefix(100)))
+            duration = 1.2
+        case .url(let raw, _):
+            hint = .text(String(raw.prefix(100)))
+            duration = 1.5
+        case .file(let urls):
+            hint = .file(urls: urls)
+            duration = 2.0
+        case .image(let data):
+            hint = .image(data)
+            duration = 2.0
+        }
+        notchController?.viewModel.copyHint = hint
         copyHintTimer?.invalidate()
-        copyHintTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+        copyHintTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.pillModel.state.copyHint = nil
+                self?.notchController?.viewModel.copyHint = nil
             }
         }
     }
 
-    private func togglePanel() {
-        if let win = panelWindow, win.isVisible {
-            win.orderOut(nil)
-            return
-        }
-        showPanel()
-    }
-
-    private func showPanel() {
-        let size = NSSize(width: 360, height: 480)
-        let win = panelWindow ?? PanelWindow(contentSize: size, viewModel: panelVM)
-        panelWindow = win
-        if let screen = NSScreen.main {
-            let notch = ScreenGeometry.notchFrame(
-                screenFrame: screen.frame,
-                auxiliaryTopLeftArea: screen.auxiliaryTopLeftArea,
-                auxiliaryTopRightArea: screen.auxiliaryTopRightArea
-            )
-            let centerX: CGFloat = notch?.midX ?? screen.frame.midX
-            let topY: CGFloat = (notch?.minY ?? screen.frame.maxY) - 4
-            let frame = NSRect(
-                x: centerX - size.width / 2,
-                y: topY - size.height,
-                width: size.width,
-                height: size.height
-            )
-            win.setFrame(frame, display: true)
-        }
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        panelVM.refresh()
-    }
-}
-
-private struct PillContainer: View {
-    @ObservedObject var model: PillModel
-    let onTap: () -> Void
-    var body: some View {
-        PillView(itemCount: model.state.itemCount, copyHint: model.state.copyHint, onTap: onTap)
+    private func forceRequestAccessibility() {
+        paster.openAccessibilityPreferences()
+        AppLogger.paste.info("user requested permission re-prompt; opened pane")
     }
 }

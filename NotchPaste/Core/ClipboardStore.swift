@@ -7,11 +7,21 @@ import os
 /// GRDB-backed clipboard history store.
 ///
 /// 设计：
-/// - SQLite 单表 `clipboard_item`（v0.1 仅 text；image/file 列预留可空）。
-/// - 写入时按 (type, content_hash) 去重 —— 重复文本仅刷新 created_at。
+/// - SQLite 单表 `clipboard_item`，kind 字段区分类型（text/file/image/url）。
+/// - 写入时按 (kind, content_hash) 去重 —— 重复内容仅刷新 created_at。
 /// - 写入后自动裁剪：保留最多 maxItems 条非 pinned 项。
 /// - 通过 Combine Publisher `itemsPublisher` 通知订阅者最新列表。
 final class ClipboardStore {
+
+    /// 类别筛选，对应 UI 左侧 sidebar。
+    enum Category: String, CaseIterable {
+        case all      // 最近：按 created_at 排
+        case favorite // 常用：按 usageCount 排（仅展示用过的）
+        case text
+        case image
+        case url
+        case file
+    }
 
     // MARK: - Schema
 
@@ -20,15 +30,35 @@ final class ClipboardStore {
         m.registerMigration("v1") { db in
             try db.create(table: "clipboard_item") { t in
                 t.column("id", .text).primaryKey()
-                t.column("kind", .text).notNull()              // "text" (v0.1) — extensible
-                t.column("text_content", .text)                // for kind=text
-                t.column("content_hash", .text).notNull()      // for dedup
+                t.column("kind", .text).notNull()
+                t.column("text_content", .text)
+                t.column("content_hash", .text).notNull()
                 t.column("created_at", .double).notNull()
                 t.column("pinned", .boolean).notNull().defaults(to: false)
                 t.column("source_app_bundle_id", .text)
             }
             try db.create(index: "idx_item_hash", on: "clipboard_item", columns: ["content_hash"])
             try db.create(index: "idx_item_created", on: "clipboard_item", columns: ["created_at"])
+        }
+        m.registerMigration("v2_file_paths") { db in
+            try db.alter(table: "clipboard_item") { t in
+                t.add(column: "file_paths_json", .text)
+            }
+        }
+        m.registerMigration("v3_image_data") { db in
+            try db.alter(table: "clipboard_item") { t in
+                t.add(column: "image_data", .blob)
+            }
+        }
+        m.registerMigration("v4_url_and_usage") { db in
+            // url_string 用于 kind=url 行。
+            // usage_count / last_used_at 用于"常用"分类排序与最近使用时间。
+            try db.alter(table: "clipboard_item") { t in
+                t.add(column: "url_string", .text)
+                t.add(column: "usage_count", .integer).notNull().defaults(to: 0)
+                t.add(column: "last_used_at", .double)
+            }
+            try db.create(index: "idx_item_usage", on: "clipboard_item", columns: ["usage_count"])
         }
         return m
     }()
@@ -45,19 +75,16 @@ final class ClipboardStore {
 
     // MARK: - Init
 
-    /// 用于生产：自动选 Application Support 路径建库。
     convenience init(maxItems: Int = 200) throws {
         let url = try Self.defaultDatabaseURL()
         let dbQueue = try DatabaseQueue(path: url.path)
         try self.init(dbQueue: dbQueue, maxItems: maxItems)
     }
 
-    /// 用于测试：注入自定义 DatabaseQueue（如内存）。
     init(dbQueue: DatabaseQueue, maxItems: Int) throws {
         self.dbQueue = dbQueue
         self.maxItems = maxItems
         try Self.migrator.migrate(dbQueue)
-        // 初始快照
         let snapshot = try fetchAllItems()
         subject.send(snapshot)
     }
@@ -77,13 +104,12 @@ final class ClipboardStore {
 
     // MARK: - Public API
 
-    /// 添加一项。如已存在相同内容（按内容哈希去重），保留原行 id 与 pinned 状态，
+    /// 添加一项。如已存在相同内容（按 content_hash 去重），保留原行 id 与 pinned/usage 状态，
     /// 仅刷新 created_at 与 sourceAppBundleID；调用方应预期传入的 `item.id`
     /// 在去重场景下不会成为最终存储的 id。
     func add(_ item: ClipboardItem) throws {
         let hash = Self.contentHash(for: item.type)
         try dbQueue.write { db in
-            // Dedup: same content_hash → update timestamp & id only (keep pinned state)
             if let existingId: String = try String.fetchOne(db, sql: "SELECT id FROM clipboard_item WHERE content_hash = ?", arguments: [hash]) {
                 try db.execute(
                     sql: "UPDATE clipboard_item SET created_at = ?, source_app_bundle_id = ? WHERE id = ?",
@@ -93,21 +119,27 @@ final class ClipboardStore {
                 try db.execute(
                     sql: """
                     INSERT INTO clipboard_item
-                        (id, kind, text_content, content_hash, created_at, pinned, source_app_bundle_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, kind, text_content, file_paths_json, image_data, url_string,
+                         content_hash, created_at, pinned, source_app_bundle_id,
+                         usage_count, last_used_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         item.id.uuidString,
                         Self.kindString(for: item.type),
                         Self.textContent(for: item.type),
+                        Self.filePathsJSON(for: item.type),
+                        Self.imageData(for: item.type),
+                        Self.urlString(for: item.type),
                         hash,
                         item.createdAt.timeIntervalSince1970,
                         item.pinned,
-                        item.sourceAppBundleID
+                        item.sourceAppBundleID,
+                        item.usageCount,
+                        item.lastUsedAt?.timeIntervalSince1970
                     ]
                 )
             }
-            // Trim: drop oldest non-pinned beyond maxItems
             try db.execute(
                 sql: """
                 DELETE FROM clipboard_item
@@ -142,23 +174,76 @@ final class ClipboardStore {
         try emitSnapshot()
     }
 
+    /// 标记一项被使用：usage_count +1，last_used_at = now。
+    /// 用户从历史里点击复制 / Enter 时调用，驱动"常用"分类的排序。
+    func markUsed(id: UUID, at date: Date = Date()) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE clipboard_item SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
+                arguments: [date.timeIntervalSince1970, id.uuidString]
+            )
+        }
+        try emitSnapshot()
+    }
+
     /// 返回全部历史（newest first）。
     func allItems() throws -> [ClipboardItem] {
         try fetchAllItems()
     }
 
-    /// 模糊搜索（仅 text 内容）。
-    func query(search: String?) throws -> [ClipboardItem] {
+    /// 按类别 + 搜索词查询。
+    /// .all → newest first；.favorite → usage 多的在前（仅 usage_count > 0）；
+    /// 其它 → 该 kind 的 newest first。
+    func query(category: Category, search: String? = nil) throws -> [ClipboardItem] {
         let all = try fetchAllItems()
+        let filtered: [ClipboardItem]
+
+        switch category {
+        case .all:
+            filtered = all
+        case .favorite:
+            // 常用 = 已加星（pinned）+ 用过的（usage_count > 0），pinned 优先
+            filtered = all
+                .filter { $0.pinned || $0.usageCount > 0 }
+                .sorted { lhs, rhs in
+                    if lhs.pinned != rhs.pinned { return lhs.pinned }
+                    if lhs.usageCount != rhs.usageCount {
+                        return lhs.usageCount > rhs.usageCount
+                    }
+                    return (lhs.lastUsedAt ?? lhs.createdAt) > (rhs.lastUsedAt ?? rhs.createdAt)
+                }
+        case .text:
+            filtered = all.filter { if case .text = $0.type { return true } else { return false } }
+        case .image:
+            filtered = all.filter { if case .image = $0.type { return true } else { return false } }
+        case .url:
+            filtered = all.filter { if case .url = $0.type { return true } else { return false } }
+        case .file:
+            filtered = all.filter { if case .file = $0.type { return true } else { return false } }
+        }
+
         guard let q = search?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty else {
-            return all
+            return filtered
         }
         let lower = q.lowercased()
-        return all.filter { item in
+        return filtered.filter { item in
             switch item.type {
-            case .text(let s): return s.lowercased().contains(lower)
+            case .text(let s):
+                return s.lowercased().contains(lower)
+            case .file(let urls):
+                return urls.contains { $0.lastPathComponent.lowercased().contains(lower) }
+            case .image:
+                return false
+            case .url(let raw, let url):
+                return raw.lowercased().contains(lower)
+                    || url.host?.lowercased().contains(lower) == true
             }
         }
+    }
+
+    /// 兼容旧调用：仅按搜索词过滤所有内容。
+    func query(search: String?) throws -> [ClipboardItem] {
+        try query(category: .all, search: search)
     }
 
     // MARK: - Internals
@@ -170,7 +255,9 @@ final class ClipboardStore {
     private func fetchAllItems() throws -> [ClipboardItem] {
         try dbQueue.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT id, kind, text_content, created_at, pinned, source_app_bundle_id
+                SELECT id, kind, text_content, file_paths_json, image_data, url_string,
+                       created_at, pinned, source_app_bundle_id,
+                       usage_count, last_used_at
                 FROM clipboard_item
                 ORDER BY pinned DESC, created_at DESC
                 """)
@@ -191,6 +278,9 @@ final class ClipboardStore {
         }
         let pinned: Bool = row["pinned"] ?? false
         let sourceApp: String? = row["source_app_bundle_id"]
+        let usageCount: Int = row["usage_count"] ?? 0
+        let lastUsedRaw: Double? = row["last_used_at"]
+        let lastUsedAt = lastUsedRaw.map { Date(timeIntervalSince1970: $0) }
 
         let type: ItemType
         switch kind {
@@ -200,6 +290,33 @@ final class ClipboardStore {
                 return nil
             }
             type = .text(text)
+        case "file":
+            guard let json: String = row["file_paths_json"],
+                  let data = json.data(using: .utf8),
+                  let paths = try? JSONDecoder().decode([String].self, from: data) else {
+                AppLogger.store.error("Row \(idStr, privacy: .public) kind=file has bad file_paths_json")
+                return nil
+            }
+            let urls = paths.map { URL(fileURLWithPath: $0) }
+            type = .file(urls)
+        case "image":
+            guard let data: Data = row["image_data"] else {
+                AppLogger.store.error("Row \(idStr, privacy: .public) kind=image has nil image_data")
+                return nil
+            }
+            type = .image(data)
+        case "url":
+            guard let raw: String = row["url_string"],
+                  let url = URL(string: raw) else {
+                // 老库可能没填 url_string；尝试用 text_content 兜底
+                if let raw: String = row["text_content"], let url = URL(string: raw) {
+                    type = .url(raw: raw, url: url)
+                    break
+                }
+                AppLogger.store.error("Row \(idStr, privacy: .public) kind=url has bad url_string")
+                return nil
+            }
+            type = .url(raw: raw, url: url)
         default:
             AppLogger.store.error("Row \(idStr, privacy: .public) has unknown kind=\(kind, privacy: .public)")
             return nil
@@ -210,28 +327,69 @@ final class ClipboardStore {
             type: type,
             createdAt: Date(timeIntervalSince1970: createdAtRaw),
             pinned: pinned,
-            sourceAppBundleID: sourceApp
+            sourceAppBundleID: sourceApp,
+            usageCount: usageCount,
+            lastUsedAt: lastUsedAt
         )
     }
 
     private static func kindString(for type: ItemType) -> String {
         switch type {
         case .text: return "text"
+        case .file: return "file"
+        case .image: return "image"
+        case .url: return "url"
         }
     }
 
     private static func textContent(for type: ItemType) -> String? {
         switch type {
         case .text(let s): return s
+        case .url(let raw, _): return raw   // 链接也写入 text_content 方便老查询逻辑
+        case .file, .image: return nil
+        }
+    }
+
+    private static func urlString(for type: ItemType) -> String? {
+        switch type {
+        case .url(_, let url): return url.absoluteString
+        default: return nil
+        }
+    }
+
+    private static func filePathsJSON(for type: ItemType) -> String? {
+        switch type {
+        case .text, .image, .url: return nil
+        case .file(let urls):
+            let paths = urls.map(\.path)
+            guard let data = try? JSONEncoder().encode(paths),
+                  let s = String(data: data, encoding: .utf8) else { return nil }
+            return s
+        }
+    }
+
+    private static func imageData(for type: ItemType) -> Data? {
+        switch type {
+        case .text, .file, .url: return nil
+        case .image(let d): return d
         }
     }
 
     private static func contentHash(for type: ItemType) -> String {
+        let raw: Data
         switch type {
         case .text(let s):
-            let data = Data(("text:" + s).utf8)
-            let digest = SHA256.hash(data: data)
-            return digest.map { String(format: "%02x", $0) }.joined()
+            raw = Data(("text:" + s).utf8)
+        case .url(_, let url):
+            raw = Data(("url:" + url.absoluteString).utf8)
+        case .file(let urls):
+            raw = Data(("file:" + urls.map(\.path).joined(separator: "|")).utf8)
+        case .image(let d):
+            var prefixed = Data("image:".utf8)
+            prefixed.append(d)
+            raw = prefixed
         }
+        let digest = SHA256.hash(data: raw)
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }

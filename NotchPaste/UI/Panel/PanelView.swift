@@ -1,95 +1,40 @@
 import SwiftUI
 import Combine
 
-/// 展开面板的顶层视图。响应键盘 ↑↓ Enter Esc。
-struct PanelView: View {
-
-    @ObservedObject var viewModel: PanelViewModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            searchBar
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-            Divider().opacity(0.2)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(Array(viewModel.filteredItems.enumerated()), id: \.element.id) { idx, item in
-                            ItemRowView(item: item, isSelected: idx == viewModel.selectedIndex)
-                                .id(item.id)
-                                .onTapGesture {
-                                    viewModel.selectedIndex = idx
-                                    viewModel.commitSelection()
-                                }
-                        }
-                    }
-                    .padding(8)
-                }
-                .onChange(of: viewModel.selectedIndex) { _, new in
-                    if let item = viewModel.filteredItems[safe: new] {
-                        proxy.scrollTo(item.id, anchor: .center)
-                    }
-                }
-            }
-        }
-        .frame(width: 360, height: 480)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        )
-        .onAppear { viewModel.refresh() }
-    }
-
-    private var searchBar: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search", text: $viewModel.searchTerm)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.06)))
-    }
-}
-
-private extension Array {
-    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
-}
-
-/// PanelView 的状态承载。把 store / paste 服务从 UI 解耦。
+/// PanelViewModel 承载剪贴板列表的状态：分类 + 搜索 + 选中 + 粘贴。
+/// 视图层（NotchView 内嵌的 ClipboardListView）订阅它。
 @MainActor
 final class PanelViewModel: ObservableObject {
 
     @Published var items: [ClipboardItem] = []
     @Published var searchTerm: String = ""
     @Published var selectedIndex: Int = 0
+    /// 当前分类。改变时会重置选中索引。
+    @Published var category: ClipboardStore.Category = .all {
+        didSet { selectedIndex = 0 }
+    }
 
+    /// 经分类 + 搜索过滤后的展示列表。
     var filteredItems: [ClipboardItem] {
-        let q = searchTerm.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return items }
-        return items.filter {
-            switch $0.type {
-            case .text(let s): return s.lowercased().contains(q)
-            }
-        }
+        (try? store.query(category: category, search: searchTerm)) ?? []
     }
 
     private let store: ClipboardStore
     private let paster: PasteService
-    private let onCommit: () -> Void
+    private let preferences: PreferencesStore
+    /// 关闭面板回调，返回打开面板时记录的"原前台应用"，供粘贴时激活回去。
+    private let onCommit: () -> NSRunningApplication?
     private var cancellables = Set<AnyCancellable>()
 
-    init(store: ClipboardStore, paster: PasteService, onCommit: @escaping () -> Void) {
+    init(
+        store: ClipboardStore,
+        paster: PasteService,
+        preferences: PreferencesStore = .shared,
+        onCommit: @escaping () -> NSRunningApplication?
+    ) {
         self.store = store
         self.paster = paster
+        self.preferences = preferences
         self.onCommit = onCommit
         store.itemsPublisher
             .receive(on: RunLoop.main)
@@ -108,18 +53,51 @@ final class PanelViewModel: ObservableObject {
     }
 
     func selectionUp() {
-        guard !filteredItems.isEmpty else { return }
+        let count = filteredItems.count
+        guard count > 0 else { return }
         selectedIndex = max(0, selectedIndex - 1)
     }
 
     func selectionDown() {
-        guard !filteredItems.isEmpty else { return }
-        selectedIndex = min(filteredItems.count - 1, selectedIndex + 1)
+        let count = filteredItems.count
+        guard count > 0 else { return }
+        selectedIndex = min(count - 1, selectedIndex + 1)
+    }
+
+    /// Tab / Shift+Tab 在分类间循环。
+    func nextCategory() {
+        let all = ClipboardStore.Category.allCases
+        guard let i = all.firstIndex(of: category) else { return }
+        category = all[(i + 1) % all.count]
+    }
+
+    func previousCategory() {
+        let all = ClipboardStore.Category.allCases
+        guard let i = all.firstIndex(of: category) else { return }
+        category = all[(i - 1 + all.count) % all.count]
     }
 
     func commitSelection() {
         guard let item = filteredItems[safe: selectedIndex] else { return }
-        paster.paste(item)
-        onCommit()    // 关闭面板
+        // 标记使用：常用分类排序依据
+        try? store.markUsed(id: item.id)
+
+        let shouldClose = preferences.closeAfterCopy || preferences.autoPasteEnabled
+        if shouldClose {
+            let targetApp = onCommit()
+            paster.paste(item, activating: targetApp)
+        } else {
+            // 不关面板：仅写剪贴板，不注入 ⌘V（注入了焦点也不在用户的 app 上）
+            paster.paste(item, activating: nil)
+        }
     }
+
+    /// 切换星标 = togglePin。pinned 项纳入"常用"分类。
+    func toggleStar(_ item: ClipboardItem) {
+        try? store.togglePin(id: item.id)
+    }
+}
+
+private extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }
