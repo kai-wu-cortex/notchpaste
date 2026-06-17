@@ -26,6 +26,19 @@ struct VibeIslandDashboardTests {
         #expect(approval?.secondaryActionTitle == "Deny")
     }
 
+    @Test("approval modal mirrors active permission request")
+    @MainActor
+    func approvalModalMirrorsActivePermissionRequest() {
+        let model = VibeIslandDashboardModel(dashboard: .demo)
+        let modal = model.approvalModal
+
+        #expect(modal?.title == "Permission Request")
+        #expect(modal?.toolLine == "Edit src/auth/middleware.ts")
+        #expect(modal?.deltaLabel == "+3 -1")
+        #expect(modal?.denyShortcut == "⌘N")
+        #expect(modal?.allowShortcut == "⌘Y")
+    }
+
     @Test("completed session jumps back to its terminal")
     func completedSessionJumpsBackToItsTerminal() {
         let completed = VibeIslandDashboard.demo.sessions.first { $0.action == .jump }

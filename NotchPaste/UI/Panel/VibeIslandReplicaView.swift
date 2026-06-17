@@ -182,6 +182,48 @@ struct VibeUsageMeter: Equatable {
     let label: String
 }
 
+struct VibeApprovalModal: Equatable {
+    let sessionID: UUID
+    let title: String
+    let toolLine: String
+    let contextLine: String
+    let removedLine: String
+    let addedLine: String
+    let deltaLabel: String
+    let denyShortcut: String
+    let allowShortcut: String
+
+    init(session: VibeSession) {
+        sessionID = session.id
+        title = session.state
+        let parsed = Self.parseDetail(session.detail)
+        toolLine = parsed.toolLine
+        deltaLabel = parsed.deltaLabel
+        if parsed.deltaLabel.isEmpty {
+            contextLine = "tool \(parsed.toolLine)"
+            removedLine = "- waiting for permission"
+            addedLine = "+ choose Allow or Deny"
+        } else {
+            contextLine = "12 const verify = (token) =>"
+            removedLine = "13- jwt.verify(token);"
+            addedLine = "13+ if (!token) throw new AuthError('missing');"
+        }
+        denyShortcut = "⌘N"
+        allowShortcut = "⌘Y"
+    }
+
+    private static func parseDetail(_ detail: String) -> (toolLine: String, deltaLabel: String) {
+        let pattern = #"(\+\d+\s+-\d+)"#
+        guard let match = detail.range(of: pattern, options: .regularExpression) else {
+            return (detail, "")
+        }
+
+        let toolLine = detail[..<match.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        let deltaLabel = String(detail[match]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (toolLine.isEmpty ? detail : toolLine, deltaLabel)
+    }
+}
+
 @MainActor
 final class VibeIslandDashboardModel: ObservableObject {
     @Published var dashboard: VibeIslandDashboard
@@ -212,6 +254,11 @@ final class VibeIslandDashboardModel: ObservableObject {
                 self?.lastAction = action
             }
             .store(in: &cancellables)
+    }
+
+    var approvalModal: VibeApprovalModal? {
+        guard let session = dashboard.sessions.first(where: { $0.action == .approval }) else { return nil }
+        return VibeApprovalModal(session: session)
     }
 
     func allow(sessionID: UUID?) {
@@ -334,6 +381,14 @@ struct VibeIslandReplicaView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .overlay {
+            if let modal = model.approvalModal {
+                approvalModal(modal)
+                    .padding(.horizontal, 18)
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: model.approvalModal)
     }
 
     private var header: some View {
@@ -605,6 +660,100 @@ struct VibeIslandReplicaView: View {
         .frame(minHeight: 95, alignment: .topLeading)
         .padding(7)
         .background(cardBackground(.cyan))
+    }
+
+    private func approvalModal(_ modal: VibeApprovalModal) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.orange.opacity(0.65))
+                    .frame(width: 6, height: 6)
+                Text(modal.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.46))
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                Text(modal.toolLine)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                diffLine(modal.contextLine, color: .white.opacity(0.38), background: .clear)
+                diffLine(modal.removedLine, color: .red.opacity(0.9), background: .red.opacity(0.16))
+                diffLine(modal.addedLine, color: .green.opacity(0.9), background: .green.opacity(0.13))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color.white.opacity(0.05), lineWidth: 1)
+            )
+
+            if !modal.deltaLabel.isEmpty {
+                Text(modal.deltaLabel)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            HStack(spacing: 8) {
+                approvalButton("Deny", shortcut: modal.denyShortcut, filled: false) {
+                    model.deny(sessionID: modal.sessionID)
+                }
+                approvalButton("Allow", shortcut: modal.allowShortcut, filled: true) {
+                    model.allow(sessionID: modal.sessionID)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 370)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.94))
+                .shadow(color: .black.opacity(0.55), radius: 22, x: 0, y: 12)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func diffLine(_ text: String, color: Color, background: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(background)
+    }
+
+    private func approvalButton(_ title: String, shortcut: String, filled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(shortcut)
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(filled ? .black.opacity(0.45) : .white.opacity(0.35))
+            }
+            .foregroundStyle(filled ? .black : .white.opacity(0.82))
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(filled ? Color.white.opacity(0.94) : Color.white.opacity(0.13))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func cardTitle(_ title: String, icon: String, tint: Color) -> some View {
