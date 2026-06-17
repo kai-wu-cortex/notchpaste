@@ -144,11 +144,18 @@ struct VibeIslandDashboardTests {
     @Test("jump exposes local feedback")
     @MainActor
     func jumpExposesLocalFeedback() {
-        let model = VibeIslandDashboardModel(dashboard: .demo)
+        var jumpedTerminal: String?
+        let model = VibeIslandDashboardModel(
+            dashboard: .demo,
+            terminalJumper: { session in
+                jumpedTerminal = session.terminal
+            }
+        )
         let completed = model.dashboard.sessions.first { $0.action == .jump }
 
         model.jump(sessionID: completed?.id)
         #expect(model.lastAction == "跳回 iTerm")
+        #expect(jumpedTerminal == "iTerm")
     }
 
     @Test("model follows unified agent store and terminal handoff feedback")

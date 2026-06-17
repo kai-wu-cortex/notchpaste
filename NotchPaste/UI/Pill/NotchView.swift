@@ -468,7 +468,9 @@ struct NotchView: View {
             case .list:
                 ClipboardListView(viewModel: panelVM)
             case .vibe:
-                VibeIslandReplicaView()
+                VibeIslandReplicaView {
+                    viewModel.notchClose()
+                }
             case .settings:
                 NotchSettingsView(
                     viewModel: viewModel,

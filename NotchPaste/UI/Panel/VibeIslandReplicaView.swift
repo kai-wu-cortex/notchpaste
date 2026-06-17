@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -247,16 +248,19 @@ final class VibeIslandDashboardModel: ObservableObject {
     @Published var lastAction = "等待 Agent 事件"
     private let eventStore: VibeIslandEventStore?
     private let agentStore: VibeAgentStore?
+    private let terminalJumper: (VibeSession) -> Void
     private var cancellables = Set<AnyCancellable>()
 
     init(
         dashboard: VibeIslandDashboard = .empty,
         eventStore: VibeIslandEventStore? = nil,
-        agentStore: VibeAgentStore? = nil
+        agentStore: VibeAgentStore? = nil,
+        terminalJumper: @escaping (VibeSession) -> Void = VibeTerminalJumper.jump
     ) {
         self.dashboard = dashboard
         self.eventStore = eventStore
         self.agentStore = agentStore
+        self.terminalJumper = terminalJumper
 
         agentStore?.$dashboard
             .sink { [weak self] dashboard in
@@ -368,6 +372,7 @@ final class VibeIslandDashboardModel: ObservableObject {
         selectedSessionID = session.id
         selectedPermissionSessionID = nil
         lastAction = "跳回 \(session.terminal)"
+        terminalJumper(session)
         writeResponse(sessionID: sessionID, action: .jump, value: session.terminal)
     }
 
@@ -402,16 +407,51 @@ final class VibeIslandDashboardModel: ObservableObject {
     }
 }
 
+private enum VibeTerminalJumper {
+    static func jump(to session: VibeSession) {
+        guard let app = runningApplication(named: session.terminal) else { return }
+        app.activate(options: [.activateIgnoringOtherApps])
+    }
+
+    private static func runningApplication(named terminal: String) -> NSRunningApplication? {
+        let names = candidateNames(for: terminal).map { $0.lowercased() }
+        return NSWorkspace.shared.runningApplications.first { app in
+            guard let localizedName = app.localizedName?.lowercased() else { return false }
+            return names.contains(localizedName)
+        }
+    }
+
+    private static func candidateNames(for terminal: String) -> [String] {
+        switch terminal.lowercased() {
+        case "iterm", "iterm2":
+            return ["iTerm", "iTerm2"]
+        case "terminal", "terminal.app":
+            return ["Terminal"]
+        case "ghostty":
+            return ["Ghostty"]
+        case "warp":
+            return ["Warp"]
+        case "wezterm":
+            return ["WezTerm"]
+        default:
+            return [terminal]
+        }
+    }
+}
+
 struct VibeIslandReplicaView: View {
 
     @StateObject private var model: VibeIslandDashboardModel
+    private let onJump: () -> Void
 
     @MainActor
     init(
         dashboard: VibeIslandDashboard? = nil,
         eventStore: VibeIslandEventStore? = VibeIslandEventStore.defaultStore(),
-        agentStore: VibeAgentStore? = nil
+        agentStore: VibeAgentStore? = nil,
+        onJump: @escaping () -> Void = {}
     ) {
+        self.onJump = onJump
         let liveAgentStore = agentStore ?? VibeAgentStore.shared
         let storedDashboard = try? eventStore?.loadDashboard()
         let initialDashboard = dashboard ?? storedDashboard ?? liveAgentStore.dashboard
@@ -905,6 +945,7 @@ struct VibeIslandReplicaView: View {
             model.allow(sessionID: row.id)
         case "Jump":
             model.jump(sessionID: row.id)
+            onJump()
         default:
             model.open(sessionID: row.id)
         }
