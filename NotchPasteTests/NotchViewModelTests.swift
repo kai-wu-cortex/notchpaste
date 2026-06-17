@@ -10,6 +10,12 @@ struct NotchViewModelTests {
         #expect(NotchViewModel.ContentType.panelTabs == [.list, .vibe])
     }
 
+    @Test("vibe tab uses native short title")
+    func vibeTabUsesNativeShortTitle() {
+        #expect(NotchViewModel.ContentType.vibe.headerTitle(itemCount: 12) == "Vibe")
+        #expect(NotchViewModel.ContentType.vibe.helpTitle == "Vibe")
+    }
+
     @Test("closing panel resets content to clipboard")
     func closingPanelResetsContentToClipboard() {
         let model = NotchViewModel(

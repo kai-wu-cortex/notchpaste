@@ -429,7 +429,7 @@ struct NotchView: View {
     }
 }
 
-private extension NotchViewModel.ContentType {
+extension NotchViewModel.ContentType {
     var headerIconName: String {
         switch self {
         case .list: return "doc.on.clipboard"
@@ -449,7 +449,7 @@ private extension NotchViewModel.ContentType {
     var helpTitle: String {
         switch self {
         case .list: return "剪贴板"
-        case .vibe: return "Vibe Island"
+        case .vibe: return "Vibe"
         case .settings: return "设置"
         }
     }
@@ -457,7 +457,7 @@ private extension NotchViewModel.ContentType {
     func headerTitle(itemCount: Int) -> String {
         switch self {
         case .list: return "剪贴板 · \(itemCount)"
-        case .vibe: return "Vibe Island"
+        case .vibe: return "Vibe"
         case .settings: return "设置"
         }
     }

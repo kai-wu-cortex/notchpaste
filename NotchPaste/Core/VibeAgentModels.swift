@@ -268,11 +268,7 @@ final class VibeAgentStore: ObservableObject {
             supportedTerminalCount: max(terminals.count, 1),
             sessions: ordered.map(\.vibeSession),
             question: nil,
-            planReview: VibePlanReview(
-                title: "Plan Review",
-                summary: ordered.isEmpty ? "等待 Claude / Codex / Gemini 事件" : "Agent hooks active",
-                points: ordered.isEmpty ? ["安装 hooks", "启动 Agent", "等待事件"] : ["unified store", "agent adapters", "live sessions"]
-            ),
+            planReview: VibePlanReview(title: "", summary: "", points: []),
             usageMeters: usageMeters(from: ordered),
             supportedAgents: VibeAgentKind.allCases.map(\.displayName)
         )

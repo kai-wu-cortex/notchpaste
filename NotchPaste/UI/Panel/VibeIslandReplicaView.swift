@@ -11,8 +11,8 @@ struct VibeIslandDashboard {
     let supportedAgents: [String]
 
     static let demo = VibeIslandDashboard(
-        supportedAgentCount: 16,
-        supportedTerminalCount: 18,
+        supportedAgentCount: 0,
+        supportedTerminalCount: 0,
         sessions: [
             VibeSession(
                 agent: "Claude",
@@ -55,40 +55,20 @@ struct VibeIslandDashboard {
                 tint: .mint
             )
         ],
-        question: VibeQuestion(
-            agent: "Claude asks",
-            prompt: "Which deployment target?",
-            options: ["Production", "Staging", "Local only"]
-        ),
-        planReview: VibePlanReview(
-            title: "Plan Review",
-            summary: "Markdown plan ready before approval",
-            points: ["middleware guard", "expiry check", "regression test"]
-        ),
-        usageMeters: [
-            VibeUsageMeter(agent: "Claude", remaining: 0.68, label: "68%"),
-            VibeUsageMeter(agent: "Codex", remaining: 0.42, label: "42%"),
-            VibeUsageMeter(agent: "Kimi", remaining: 0.81, label: "81%")
-        ],
-        supportedAgents: [
-            "Claude Code", "Codex", "Gemini CLI", "Cursor", "OpenCode", "Droid",
-            "Qoder", "Qwen", "Kimi Code", "DeepSeek", "Copilot", "CodeBuddy",
-            "Kiro", "Hermes", "Amp", "Pi Agent"
-        ]
+        question: nil,
+        planReview: VibePlanReview(title: "", summary: "", points: []),
+        usageMeters: [],
+        supportedAgents: []
     )
 
     static let empty = VibeIslandDashboard(
-        supportedAgentCount: 3,
-        supportedTerminalCount: 1,
+        supportedAgentCount: 0,
+        supportedTerminalCount: 0,
         sessions: [],
         question: nil,
-        planReview: VibePlanReview(
-            title: "Agent Hooks",
-            summary: "等待 Claude / Codex / Gemini 事件",
-            points: ["已安装 hooks", "监听工具调用", "本地状态反馈"]
-        ),
+        planReview: VibePlanReview(title: "", summary: "", points: []),
         usageMeters: [],
-        supportedAgents: ["Claude", "Codex", "Gemini"]
+        supportedAgents: []
     )
 }
 
@@ -182,45 +162,35 @@ struct VibeUsageMeter: Equatable {
     let label: String
 }
 
-struct VibeApprovalModal: Equatable {
-    let sessionID: UUID
+struct VibeNativeSessionRow: Identifiable {
+    let id: UUID
     let title: String
-    let toolLine: String
-    let contextLine: String
-    let removedLine: String
-    let addedLine: String
-    let deltaLabel: String
-    let denyShortcut: String
-    let allowShortcut: String
+    let subtitle: String
+    let projectTitle: String
+    let detail: String
+    let state: String
+    let usageLabel: String?
+    let tint: Color
+    let isWaitingForApproval: Bool
+    let primaryActionTitle: String
+    let secondaryActionTitle: String?
 
-    init(session: VibeSession) {
-        sessionID = session.id
-        title = session.state
-        let parsed = Self.parseDetail(session.detail)
-        toolLine = parsed.toolLine
-        deltaLabel = parsed.deltaLabel
-        if parsed.deltaLabel.isEmpty {
-            contextLine = "tool \(parsed.toolLine)"
-            removedLine = "- waiting for permission"
-            addedLine = "+ choose Allow or Deny"
-        } else {
-            contextLine = "12 const verify = (token) =>"
-            removedLine = "13- jwt.verify(token);"
-            addedLine = "13+ if (!token) throw new AuthError('missing');"
-        }
-        denyShortcut = "⌘N"
-        allowShortcut = "⌘Y"
+    init(session: VibeSession, usageLabel: String? = nil) {
+        id = session.id
+        title = session.agent
+        subtitle = session.terminal
+        projectTitle = session.title
+        detail = session.detail
+        state = session.state
+        self.usageLabel = usageLabel
+        tint = session.tint
+        isWaitingForApproval = session.action == .approval
+        primaryActionTitle = session.primaryActionTitle
+        secondaryActionTitle = session.secondaryActionTitle
     }
 
-    private static func parseDetail(_ detail: String) -> (toolLine: String, deltaLabel: String) {
-        let pattern = #"(\+\d+\s+-\d+)"#
-        guard let match = detail.range(of: pattern, options: .regularExpression) else {
-            return (detail, "")
-        }
-
-        let toolLine = detail[..<match.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        let deltaLabel = String(detail[match]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return (toolLine.isEmpty ? detail : toolLine, deltaLabel)
+    var showsInlineApproval: Bool {
+        isWaitingForApproval
     }
 }
 
@@ -256,9 +226,13 @@ final class VibeIslandDashboardModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var approvalModal: VibeApprovalModal? {
-        guard let session = dashboard.sessions.first(where: { $0.action == .approval }) else { return nil }
-        return VibeApprovalModal(session: session)
+    var nativeRows: [VibeNativeSessionRow] {
+        dashboard.sessions.map { session in
+            VibeNativeSessionRow(
+                session: session,
+                usageLabel: dashboard.usageMeters.first { $0.agent == session.agent }?.label
+            )
+        }
     }
 
     func allow(sessionID: UUID?) {
@@ -286,7 +260,7 @@ final class VibeIslandDashboardModel: ObservableObject {
     }
 
     func reviewPlan() {
-        lastAction = "正在审阅 \(dashboard.planReview.title)"
+        lastAction = dashboard.planReview.title.isEmpty ? "无审阅计划" : "正在审阅 \(dashboard.planReview.title)"
         writeResponse(sessionID: nil, action: .reviewPlan, value: dashboard.planReview.title)
     }
 
@@ -318,11 +292,6 @@ final class VibeIslandDashboardModel: ObservableObject {
     private func sessionIndex(for id: UUID?) -> Int? {
         guard let id else { return nil }
         return dashboard.sessions.firstIndex { $0.id == id }
-    }
-
-    private func session(for id: UUID?) -> VibeSession? {
-        guard let index = sessionIndex(for: id) else { return nil }
-        return dashboard.sessions[index]
     }
 
     private func writeResponse(sessionID: UUID?, action: VibeIslandAgentResponseAction, value: String) {
@@ -359,460 +328,191 @@ struct VibeIslandReplicaView: View {
         )
     }
 
-    private var dashboard: VibeIslandDashboard { model.dashboard }
-
     var body: some View {
-        VStack(spacing: 8) {
-            header
-            featureRail
-            sessionList
-            lowerGrid
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.035, green: 0.034, blue: 0.03),
-                    Color(red: 0.012, green: 0.015, blue: 0.018)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .overlay {
-            if let modal = model.approvalModal {
-                approvalModal(modal)
-                    .padding(.horizontal, 18)
-                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+        VStack(spacing: 0) {
+            if model.nativeRows.isEmpty {
+                emptyState
+            } else {
+                sessionList
             }
         }
-        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: model.approvalModal)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(Color.black)
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            appMark
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Text("No sessions")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.42))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Vibe Island")
-                    .font(.system(size: 17, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(.white)
-                Text("Agent 工作时，你保持心流")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.52))
+            Text("Run Claude, Codex, or Gemini in terminal")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.27))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var sessionList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 2) {
+                ForEach(model.nativeRows) { row in
+                    nativeRow(row)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private func nativeRow(_ row: VibeNativeSessionRow) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            stateIndicator(for: row)
+                .frame(width: 14)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(row.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    Text(row.subtitle)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.34))
+                        .lineLimit(1)
+
+                    if let usage = row.usageLabel {
+                        Text(usage)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.3))
+                            .lineLimit(1)
+                    }
+                }
+
+                Text(row.projectTitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.86))
+                    .lineLimit(1)
+
+                Text(row.detail.isEmpty ? row.state : row.detail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(row.isWaitingForApproval ? TerminalPalette.amber : .white.opacity(0.42))
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 0)
 
-            HStack(spacing: 6) {
-                metric("\(dashboard.supportedAgentCount)", "agents", .cyan)
-                metric("\(dashboard.supportedTerminalCount)+", "terms", .orange)
-            }
+            rowActions(row)
         }
-    }
-
-    private var appMark: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.white.opacity(0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.orange.opacity(0.45), lineWidth: 1)
-                )
-
-            VStack(spacing: 2) {
-                HStack(spacing: 2) {
-                    Pixel(color: .orange)
-                    Pixel(color: .cyan)
-                    Pixel(color: .white.opacity(0.35))
-                }
-                HStack(spacing: 2) {
-                    Pixel(color: .green)
-                    Pixel(color: .yellow)
-                    Pixel(color: .pink)
-                }
-                HStack(spacing: 2) {
-                    Pixel(color: .cyan.opacity(0.75))
-                    Pixel(color: .orange.opacity(0.85))
-                    Pixel(color: .mint)
-                }
-            }
-        }
-        .frame(width: 38, height: 38)
-    }
-
-    private func metric(_ value: String, _ label: String, _ tint: Color) -> some View {
-        VStack(spacing: 1) {
-            Text(value)
-                .font(.system(size: 15, weight: .black, design: .monospaced))
-                .foregroundStyle(tint)
-            Text(label)
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.42))
-        }
-        .frame(width: 46, height: 34)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.white.opacity(0.055))
-        )
-    }
-
-    private var featureRail: some View {
-        HStack(spacing: 6) {
-            featureChip("总览", "rectangle.3.group", .cyan)
-            featureChip("批准", "checkmark.seal", .orange)
-            featureChip("询问", "bubble.left.and.bubble.right", .pink)
-            featureChip("跳回", "arrow.turn.down.right", .mint)
-        }
-    }
-
-    private func featureChip(_ title: String, _ icon: String, _ tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .bold))
-            Text(title)
-                .font(.system(size: 10, weight: .bold))
-        }
-        .foregroundStyle(tint)
-        .frame(maxWidth: .infinity)
-        .frame(height: 25)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(tint.opacity(0.12))
-        )
-    }
-
-    private var sessionList: some View {
-        VStack(spacing: 5) {
-            if dashboard.sessions.isEmpty {
-                emptyState
-            } else {
-                ForEach(dashboard.sessions.prefix(3)) { session in
-                    sessionRow(session)
-                }
-            }
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("等待 Claude Code")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white)
-            Text("已接入 Vibe Notch hooks。启动 Claude Code 后，会话和审批会显示在这里。")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
+        .padding(.leading, 8)
+        .padding(.trailing, 12)
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.052))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.cyan.opacity(0.14), lineWidth: 1)
-                )
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(model.selectedSessionID == row.id ? row.tint.opacity(0.12) : Color.clear)
         )
-    }
-
-    private func sessionRow(_ session: VibeSession) -> some View {
-        let selected = model.selectedSessionID == session.id
-
-        return HStack(spacing: 8) {
-            VStack(spacing: 2) {
-                Circle()
-                    .fill(session.tint)
-                    .frame(width: 7, height: 7)
-                Rectangle()
-                    .fill(session.tint.opacity(0.45))
-                    .frame(width: 2, height: 24)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(session.agent)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text(session.terminal)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.44))
-                    Spacer(minLength: 0)
-                    Text(session.elapsed)
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-
-                Text(session.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(1)
-
-                Text(session.detail)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(session.tint.opacity(0.8))
-                    .lineLimit(1)
-            }
-
-            VStack(spacing: 4) {
-                if let secondary = session.secondaryActionTitle {
-                    Button(secondary) {
-                        model.deny(sessionID: session.id)
-                    }
-                    .buttonStyle(VibeMiniButtonStyle(tint: .white.opacity(0.45), filled: false))
-                }
-
-                Button(session.primaryActionTitle) {
-                    performPrimaryAction(for: session)
-                }
-                .buttonStyle(VibeMiniButtonStyle(tint: session.tint, filled: session.action == .approval))
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selected ? session.tint.opacity(0.16) : Color.white.opacity(0.052))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(session.tint.opacity(selected ? 0.45 : 0.16), lineWidth: 1)
-                )
-        )
-    }
-
-    private var lowerGrid: some View {
-        HStack(alignment: .top, spacing: 7) {
-            questionCard
-            usageCard
+        .onTapGesture(count: 2) {
+            model.open(sessionID: row.id)
         }
     }
 
     @ViewBuilder
-    private var questionCard: some View {
-        if let question = dashboard.question {
-            VStack(alignment: .leading, spacing: 5) {
-                cardTitle(question.agent, icon: "questionmark.bubble", tint: .pink)
-                Text(question.prompt)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .lineLimit(1)
-
-                ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
-                    Button {
-                        model.reply(option)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("⌘\(index + 1)")
-                                .font(.system(size: 8, weight: .heavy, design: .monospaced))
-                                .foregroundStyle(.pink)
-                            Text(option)
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(model.selectedQuestionOption == option ? .black : .white.opacity(0.82))
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 6)
-                        .frame(height: 19)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(model.selectedQuestionOption == option ? Color.pink.opacity(0.9) : Color.white.opacity(0.055))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(7)
-            .background(cardBackground(.pink))
+    private func stateIndicator(for row: VibeNativeSessionRow) -> some View {
+        if row.isWaitingForApproval {
+            Text("✢")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(TerminalPalette.amber)
+        } else if row.state == "Ready" || row.state == "Completed" || row.primaryActionTitle == "Jump" {
+            Circle()
+                .fill(TerminalPalette.green)
+                .frame(width: 6, height: 6)
+        } else {
+            Text("·")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(row.tint)
         }
     }
 
-    private var usageCard: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            cardTitle("用量", icon: "gauge.with.dots.needle.67percent", tint: .cyan)
-
-            ForEach(dashboard.usageMeters, id: \.agent) { meter in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(meter.agent)
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.76))
-                        Spacer(minLength: 0)
-                        Text(meter.label)
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.cyan.opacity(0.9))
-                    }
-                    ProgressView(value: meter.remaining)
-                        .tint(.cyan)
-                        .scaleEffect(x: 1, y: 0.55, anchor: .center)
-                }
-            }
-
-            Text(model.lastAction)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.white.opacity(0.38))
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(minHeight: 95, alignment: .topLeading)
-        .padding(7)
-        .background(cardBackground(.cyan))
-    }
-
-    private func approvalModal(_ modal: VibeApprovalModal) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Color.orange.opacity(0.65))
-                    .frame(width: 6, height: 6)
-                Text(modal.title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.46))
-                Spacer(minLength: 0)
-            }
-
+    @ViewBuilder
+    private func rowActions(_ row: VibeNativeSessionRow) -> some View {
+        if row.showsInlineApproval {
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.orange)
-                Text(modal.toolLine)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                diffLine(modal.contextLine, color: .white.opacity(0.38), background: .clear)
-                diffLine(modal.removedLine, color: .red.opacity(0.9), background: .red.opacity(0.16))
-                diffLine(modal.addedLine, color: .green.opacity(0.9), background: .green.opacity(0.13))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Color.white.opacity(0.05), lineWidth: 1)
-            )
-
-            if !modal.deltaLabel.isEmpty {
-                Text(modal.deltaLabel)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.58))
-            }
-
-            HStack(spacing: 8) {
-                approvalButton("Deny", shortcut: modal.denyShortcut, filled: false) {
-                    model.deny(sessionID: modal.sessionID)
+                iconButton("bubble.left") {
+                    model.open(sessionID: row.id)
                 }
-                approvalButton("Allow", shortcut: modal.allowShortcut, filled: true) {
-                    model.allow(sessionID: modal.sessionID)
+
+                Button("Deny") {
+                    model.deny(sessionID: row.id)
                 }
+                .buttonStyle(VibeNativeButtonStyle(filled: false, tint: row.tint))
+
+                Button("Allow") {
+                    model.allow(sessionID: row.id)
+                }
+                .buttonStyle(VibeNativeButtonStyle(filled: true, tint: .white))
+            }
+        } else {
+            HStack(spacing: 6) {
+                iconButton("bubble.left") {
+                    model.open(sessionID: row.id)
+                }
+
+                Button(row.primaryActionTitle) {
+                    performPrimaryAction(for: row)
+                }
+                .buttonStyle(VibeNativeButtonStyle(filled: false, tint: row.tint))
             }
         }
-        .padding(14)
-        .frame(maxWidth: 370)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.black.opacity(0.94))
-                .shadow(color: .black.opacity(0.55), radius: 22, x: 0, y: 12)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
     }
 
-    private func diffLine(_ text: String, color: Color, background: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.72)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 9)
-            .frame(height: 22)
-            .background(background)
-    }
-
-    private func approvalButton(_ title: String, shortcut: String, filled: Bool, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                Text(shortcut)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(filled ? .black.opacity(0.45) : .white.opacity(0.35))
-            }
-            .foregroundStyle(filled ? .black : .white.opacity(0.82))
-            .frame(maxWidth: .infinity)
-            .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(filled ? Color.white.opacity(0.94) : Color.white.opacity(0.13))
-            )
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.45))
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.055))
+                )
         }
         .buttonStyle(.plain)
     }
 
-    private func cardTitle(_ title: String, icon: String, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .bold))
-            Text(title)
-                .font(.system(size: 9, weight: .heavy))
-                .lineLimit(1)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(tint)
-    }
-
-    private func cardBackground(_ tint: Color) -> some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(.white.opacity(0.045))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(tint.opacity(0.16), lineWidth: 1)
-            )
-    }
-
-    private func performPrimaryAction(for session: VibeSession) {
-        switch session.action {
-        case .approval:
-            model.allow(sessionID: session.id)
-        case .question:
-            model.reply(dashboard.question?.options.first ?? "")
-        case .jump:
-            model.jump(sessionID: session.id)
-        case .monitor:
-            model.open(sessionID: session.id)
+    private func performPrimaryAction(for row: VibeNativeSessionRow) {
+        switch row.primaryActionTitle {
+        case "Allow":
+            model.allow(sessionID: row.id)
+        case "Jump":
+            model.jump(sessionID: row.id)
+        default:
+            model.open(sessionID: row.id)
         }
     }
 }
 
-private struct Pixel: View {
-    let color: Color
-
-    var body: some View {
-        Rectangle()
-            .fill(color)
-            .frame(width: 7, height: 7)
-    }
+private struct TerminalPalette {
+    static let amber = Color(red: 1.0, green: 0.55, blue: 0.16)
+    static let green = Color(red: 0.18, green: 0.82, blue: 0.4)
 }
 
-private struct VibeMiniButtonStyle: ButtonStyle {
-    let tint: Color
+private struct VibeNativeButtonStyle: ButtonStyle {
     let filled: Bool
+    let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 8, weight: .black, design: .monospaced))
-            .foregroundStyle(filled ? .black : tint)
-            .frame(width: 40, height: 18)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(filled ? .black : tint.opacity(0.92))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(filled ? tint.opacity(configuration.isPressed ? 0.72 : 0.95) : tint.opacity(0.12))
+                Capsule()
+                    .fill(filled ? tint.opacity(configuration.isPressed ? 0.76 : 0.92) : tint.opacity(configuration.isPressed ? 0.22 : 0.12))
             )
     }
 }

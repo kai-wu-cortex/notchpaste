@@ -50,11 +50,7 @@ final class VibeClaudeSessionStore: ObservableObject {
             supportedTerminalCount: 1,
             sessions: liveSessions,
             question: nil,
-            planReview: VibePlanReview(
-                title: "Plan Review",
-                summary: liveSessions.isEmpty ? "等待 Claude Code hook 事件" : "Claude Code hooks active",
-                points: liveSessions.isEmpty ? ["安装 hooks", "启动 Claude Code", "等待事件"] : ["socket listening", "permission bridge", "live session"]
-            ),
+            planReview: VibePlanReview(title: "", summary: "", points: []),
             usageMeters: liveSessions.isEmpty ? [] : [VibeUsageMeter(agent: "Claude", remaining: 1, label: "live")],
             supportedAgents: ["Claude Code"]
         )

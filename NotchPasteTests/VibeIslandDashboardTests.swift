@@ -4,18 +4,18 @@ import Testing
 @Suite("VibeIslandDashboard")
 struct VibeIslandDashboardTests {
 
-    @Test("demo dashboard mirrors Vibe Island core functions")
-    func demoDashboardMirrorsVibeIslandCoreFunctions() {
+    @Test("demo data exposes native sessions without dashboard decorations")
+    func demoDataExposesNativeSessionsWithoutDashboardDecorations() {
         let dashboard = VibeIslandDashboard.demo
 
-        #expect(dashboard.supportedAgentCount == 16)
-        #expect(dashboard.supportedTerminalCount >= 18)
         #expect(dashboard.sessions.contains { $0.agent == "Claude" && $0.action == .approval })
         #expect(dashboard.sessions.contains { $0.agent == "Codex" && $0.terminal == "Terminal" })
         #expect(dashboard.sessions.contains { $0.agent == "Gemini" && $0.terminal == "Ghostty" })
-        #expect(dashboard.question?.options == ["Production", "Staging", "Local only"])
-        #expect(dashboard.planReview.title == "Plan Review")
-        #expect(dashboard.usageMeters.map { $0.agent }.contains("Codex"))
+        #expect(dashboard.supportedAgentCount == 0)
+        #expect(dashboard.supportedTerminalCount == 0)
+        #expect(dashboard.question == nil)
+        #expect(dashboard.planReview.points.isEmpty)
+        #expect(dashboard.usageMeters.isEmpty)
     }
 
     @Test("approval session exposes allow and deny actions")
@@ -26,17 +26,18 @@ struct VibeIslandDashboardTests {
         #expect(approval?.secondaryActionTitle == "Deny")
     }
 
-    @Test("approval modal mirrors active permission request")
+    @Test("native approval row mirrors active permission request")
     @MainActor
-    func approvalModalMirrorsActivePermissionRequest() {
+    func nativeApprovalRowMirrorsActivePermissionRequest() {
         let model = VibeIslandDashboardModel(dashboard: .demo)
-        let modal = model.approvalModal
+        let row = model.nativeRows.first { $0.isWaitingForApproval }
 
-        #expect(modal?.title == "Permission Request")
-        #expect(modal?.toolLine == "Edit src/auth/middleware.ts")
-        #expect(modal?.deltaLabel == "+3 -1")
-        #expect(modal?.denyShortcut == "⌘N")
-        #expect(modal?.allowShortcut == "⌘Y")
+        #expect(row?.title == "Claude")
+        #expect(row?.subtitle == "iTerm")
+        #expect(row?.detail == "Edit src/auth/middleware.ts  +3 -1")
+        #expect(row?.showsInlineApproval == true)
+        #expect(row?.secondaryActionTitle == "Deny")
+        #expect(row?.primaryActionTitle == "Allow")
     }
 
     @Test("completed session jumps back to its terminal")
@@ -83,14 +84,11 @@ struct VibeIslandDashboardTests {
         #expect(model.selectedQuestionOption == "Production")
     }
 
-    @Test("plan review and jump expose local feedback")
+    @Test("jump exposes local feedback")
     @MainActor
-    func planReviewAndJumpExposeLocalFeedback() {
+    func jumpExposesLocalFeedback() {
         let model = VibeIslandDashboardModel(dashboard: .demo)
         let completed = model.dashboard.sessions.first { $0.action == .jump }
-
-        model.reviewPlan()
-        #expect(model.lastAction == "正在审阅 Plan Review")
 
         model.jump(sessionID: completed?.id)
         #expect(model.lastAction == "跳回 iTerm")
