@@ -162,6 +162,31 @@ enum VibeSessionAction: String, Codable, Equatable {
     case monitor
 }
 
+enum VibeNativeMode: CaseIterable, Equatable {
+    case overview
+    case approvals
+    case questions
+    case jump
+
+    var title: String {
+        switch self {
+        case .overview: return "总览"
+        case .approvals: return "批准"
+        case .questions: return "询问"
+        case .jump: return "跳回"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .overview: return "square.grid.2x2"
+        case .approvals: return "checkmark.seal"
+        case .questions: return "bubble.left.and.bubble.right"
+        case .jump: return "arrow.turn.down.right"
+        }
+    }
+}
+
 struct VibeQuestion: Equatable {
     let agent: String
     let prompt: String
@@ -216,7 +241,9 @@ struct VibeNativeSessionRow: Identifiable {
 final class VibeIslandDashboardModel: ObservableObject {
     @Published var dashboard: VibeIslandDashboard
     @Published var selectedSessionID: UUID?
+    @Published var selectedPermissionSessionID: UUID?
     @Published var selectedQuestionOption: String?
+    @Published var mode: VibeNativeMode = .overview
     @Published var lastAction = "等待 Agent 事件"
     private let eventStore: VibeIslandEventStore?
     private let agentStore: VibeAgentStore?
@@ -258,8 +285,26 @@ final class VibeIslandDashboardModel: ObservableObject {
         return nativeRows.first { $0.id == selectedSessionID }
     }
 
+    var selectedPermissionRow: VibeNativeSessionRow? {
+        guard let selectedPermissionSessionID else { return nil }
+        return nativeRows.first { $0.id == selectedPermissionSessionID && $0.showsInlineApproval }
+    }
+
     var pendingInteractionRow: VibeNativeSessionRow? {
         nativeRows.first { $0.showsInlineApproval }
+    }
+
+    var visibleRows: [VibeNativeSessionRow] {
+        switch mode {
+        case .overview:
+            return nativeRows
+        case .approvals:
+            return nativeRows.filter(\.showsInlineApproval)
+        case .questions:
+            return nativeRows.filter { $0.primaryActionTitle == "Reply" }
+        case .jump:
+            return nativeRows.filter { $0.primaryActionTitle == "Jump" }
+        }
     }
 
     func allow(sessionID: UUID?) {
@@ -295,6 +340,24 @@ final class VibeIslandDashboardModel: ObservableObject {
         guard let index = sessionIndex(for: sessionID) else { return }
         let session = dashboard.sessions[index]
         selectedSessionID = session.id
+        selectedPermissionSessionID = nil
+        lastAction = "打开 \(session.agent) 状态"
+        writeResponse(sessionID: sessionID, action: .open, value: session.agent)
+    }
+
+    func openConversation(sessionID: UUID?) {
+        guard let index = sessionIndex(for: sessionID) else { return }
+        let session = dashboard.sessions[index]
+
+        if session.action == .approval {
+            selectedPermissionSessionID = session.id
+            selectedSessionID = nil
+            mode = .approvals
+        } else {
+            selectedPermissionSessionID = nil
+            selectedSessionID = session.id
+        }
+
         lastAction = "打开 \(session.agent) 状态"
         writeResponse(sessionID: sessionID, action: .open, value: session.agent)
     }
@@ -303,12 +366,14 @@ final class VibeIslandDashboardModel: ObservableObject {
         guard let index = sessionIndex(for: sessionID) else { return }
         let session = dashboard.sessions[index]
         selectedSessionID = session.id
+        selectedPermissionSessionID = nil
         lastAction = "跳回 \(session.terminal)"
         writeResponse(sessionID: sessionID, action: .jump, value: session.terminal)
     }
 
     func closeConversation() {
         selectedSessionID = nil
+        selectedPermissionSessionID = nil
     }
 
     private func updateApproval(sessionID: UUID?, state: String, detail: String, feedback: String) {
@@ -362,16 +427,18 @@ struct VibeIslandReplicaView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                if let selectedRow = model.selectedNativeRow {
+                if let permissionRow = model.selectedPermissionRow {
+                    permissionRequestPage(permissionRow)
+                } else if let selectedRow = model.selectedNativeRow {
                     conversationDetail(selectedRow)
                 } else if model.nativeRows.isEmpty {
                     emptyState
                 } else {
-                    sessionList
+                    modeContent
                 }
             }
 
-            if model.selectedNativeRow == nil, let row = model.pendingInteractionRow {
+            if model.selectedNativeRow == nil, model.selectedPermissionRow == nil, let row = model.pendingInteractionRow {
                 permissionRequestModal(row)
                     .transition(.scale(scale: 0.92, anchor: .top).combined(with: .opacity))
             }
@@ -381,6 +448,7 @@ struct VibeIslandReplicaView: View {
         .padding(.bottom, 8)
         .background(Color.black)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.selectedSessionID)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.selectedPermissionSessionID)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingInteractionRow?.id)
     }
 
@@ -397,16 +465,137 @@ struct VibeIslandReplicaView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var modeContent: some View {
+        VStack(spacing: 8) {
+            modeSelector
+
+            if model.visibleRows.isEmpty {
+                modeEmptyState
+            } else {
+                sessionList
+            }
+        }
+    }
+
+    private var modeSelector: some View {
+        HStack(spacing: 6) {
+            ForEach(VibeNativeMode.allCases, id: \.self) { mode in
+                Button {
+                    model.mode = mode
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: mode.iconName)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(mode.title)
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(model.mode == mode ? .black : .white.opacity(0.64))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(model.mode == mode ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private var modeEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: model.mode.iconName)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.white.opacity(0.28))
+
+            Text("\(model.mode.title)暂无事件")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.42))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var sessionList: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 2) {
-                ForEach(model.nativeRows) { row in
+                ForEach(model.visibleRows) { row in
                     nativeRow(row)
                 }
             }
             .padding(.vertical, 4)
         }
         .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private func permissionRequestPage(_ row: VibeNativeSessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                iconButton("chevron.left") {
+                    model.closeConversation()
+                }
+
+                stateIndicator(for: row)
+                    .frame(width: 14)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Permission Request")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.88))
+
+                    Text("\(row.title)  \(row.subtitle)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.34))
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(TerminalPalette.amber)
+
+                    Text(permissionTitle(for: row))
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .foregroundColor(TerminalPalette.amber)
+
+                    Text(permissionPath(for: row))
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.86))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                permissionDiffBlock(row)
+
+                HStack(spacing: 10) {
+                    Button("Deny") {
+                        model.deny(sessionID: row.id)
+                    }
+                    .buttonStyle(VibeModalButtonStyle(filled: false))
+
+                    Button("Allow") {
+                        model.allow(sessionID: row.id)
+                    }
+                    .buttonStyle(VibeModalButtonStyle(filled: true))
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.black.opacity(0.95))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(row.tint.opacity(0.18), lineWidth: 1)
+            )
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func conversationDetail(_ row: VibeNativeSessionRow) -> some View {
@@ -669,7 +858,7 @@ struct VibeIslandReplicaView: View {
         if row.showsInlineApproval {
             HStack(spacing: 6) {
                 iconButton("bubble.left") {
-                    model.open(sessionID: row.id)
+                    model.openConversation(sessionID: row.id)
                 }
 
                 Button("Deny") {
@@ -685,7 +874,7 @@ struct VibeIslandReplicaView: View {
         } else {
             HStack(spacing: 6) {
                 iconButton("bubble.left") {
-                    model.open(sessionID: row.id)
+                    model.openConversation(sessionID: row.id)
                 }
 
                 Button(row.primaryActionTitle) {

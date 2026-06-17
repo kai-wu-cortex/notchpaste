@@ -67,6 +67,36 @@ struct VibeIslandDashboardTests {
         #expect(model.selectedNativeRow == nil)
     }
 
+    @Test("approval chat opens permission request page")
+    @MainActor
+    func approvalChatOpensPermissionRequestPage() {
+        let model = VibeIslandDashboardModel(dashboard: .demo)
+        let approval = model.dashboard.sessions.first { $0.action == .approval }
+
+        model.openConversation(sessionID: approval?.id)
+
+        #expect(model.selectedPermissionRow?.id == approval?.id)
+        #expect(model.selectedNativeRow == nil)
+    }
+
+    @Test("native mode filters expose overview approvals questions and jump sessions")
+    @MainActor
+    func nativeModeFiltersExposeOverviewApprovalsQuestionsAndJumpSessions() {
+        let model = VibeIslandDashboardModel(dashboard: .demo)
+
+        model.mode = .overview
+        #expect(model.visibleRows.count == model.nativeRows.count)
+
+        model.mode = .approvals
+        #expect(model.visibleRows.allSatisfy { $0.showsInlineApproval })
+
+        model.mode = .questions
+        #expect(model.visibleRows.isEmpty)
+
+        model.mode = .jump
+        #expect(model.visibleRows.allSatisfy { $0.primaryActionTitle == "Jump" })
+    }
+
     @Test("completed session jumps back to its terminal")
     func completedSessionJumpsBackToItsTerminal() {
         let completed = VibeIslandDashboard.demo.sessions.first { $0.action == .jump }

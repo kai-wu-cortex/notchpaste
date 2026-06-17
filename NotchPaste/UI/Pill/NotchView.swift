@@ -331,17 +331,14 @@ struct NotchView: View {
     }
 
     private var agentActivityHint: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.48)
                 .tint(needsAgentInteraction ? agentAttentionColor : .cyan)
                 .frame(width: 18, height: 18)
-
-            Text(needsAgentInteraction ? "需要处理" : "运行中")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(needsAgentInteraction ? agentAttentionColor : .white.opacity(0.86))
-                .lineLimit(1)
 
             Spacer(minLength: 0)
         }
