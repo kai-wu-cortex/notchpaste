@@ -10,6 +10,7 @@ struct VibeCodexHookEvent: Codable, Equatable, Sendable {
     let tool: String?
     let toolInput: [String: AnyCodable]?
     let toolUseId: String?
+    let usageLabel: String?
     let message: String?
 
     enum CodingKeys: String, CodingKey {
@@ -22,6 +23,7 @@ struct VibeCodexHookEvent: Codable, Equatable, Sendable {
         case tool
         case toolInput = "tool_input"
         case toolUseId = "tool_use_id"
+        case usageLabel = "usage_label"
         case message
     }
 }
@@ -38,6 +40,7 @@ extension VibeCodexHookEvent {
             toolName: tool,
             toolInputSummary: toolInputSummary,
             approvalID: toolUseId,
+            usageLabel: usageLabel,
             responseMode: agentStatus == .waitingForApproval ? .terminalHandoff : .none,
             createdAt: Date()
         )

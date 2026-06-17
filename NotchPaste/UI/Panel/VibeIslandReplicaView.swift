@@ -531,7 +531,6 @@ struct VibeIslandReplicaView: View {
     private var lowerGrid: some View {
         HStack(alignment: .top, spacing: 7) {
             questionCard
-            planCard
             usageCard
         }
     }
@@ -576,38 +575,6 @@ struct VibeIslandReplicaView: View {
         }
     }
 
-    private var planCard: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            cardTitle(dashboard.planReview.title, icon: "doc.richtext", tint: .orange)
-            Text(dashboard.planReview.summary)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.65))
-                .lineLimit(2)
-
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(dashboard.planReview.points, id: \.self) { point in
-                    HStack(spacing: 4) {
-                        Rectangle()
-                            .fill(Color.orange.opacity(0.8))
-                            .frame(width: 4, height: 4)
-                        Text(point)
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .lineLimit(1)
-                    }
-                }
-            }
-
-            Button("Review") {
-                model.reviewPlan()
-            }
-            .buttonStyle(VibeMiniButtonStyle(tint: .orange, filled: false))
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(7)
-        .background(cardBackground(.orange))
-    }
-
     private var usageCard: some View {
         VStack(alignment: .leading, spacing: 5) {
             cardTitle("用量", icon: "gauge.with.dots.needle.67percent", tint: .cyan)
@@ -635,6 +602,7 @@ struct VibeIslandReplicaView: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(minHeight: 95, alignment: .topLeading)
         .padding(7)
         .background(cardBackground(.cyan))
     }

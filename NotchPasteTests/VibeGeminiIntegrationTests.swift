@@ -46,6 +46,7 @@ struct VibeGeminiIntegrationTests {
             tool: "ShellTool",
             toolInput: ["command": AnyCodable("pnpm lint")],
             toolUseId: nil,
+            usageLabel: nil,
             message: nil
         )
 

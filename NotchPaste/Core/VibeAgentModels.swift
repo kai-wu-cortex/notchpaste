@@ -118,6 +118,7 @@ struct VibeAgentSessionState: Equatable {
     var stateOverride: String?
     var approvalID: String?
     var responseMode: VibeAgentResponseMode
+    var usageLabel: String?
     var lastActivity: Date
 
     init(event: VibeAgentEvent) {
@@ -133,6 +134,7 @@ struct VibeAgentSessionState: Equatable {
         stateOverride = nil
         approvalID = event.approvalID
         responseMode = event.responseMode
+        usageLabel = event.usageLabel
         lastActivity = event.createdAt
     }
 
@@ -148,6 +150,9 @@ struct VibeAgentSessionState: Equatable {
             self.approvalID = approvalID
         }
         responseMode = event.responseMode
+        if let usageLabel = event.usageLabel {
+            self.usageLabel = usageLabel
+        }
         lastActivity = event.createdAt
     }
 
@@ -268,10 +273,25 @@ final class VibeAgentStore: ObservableObject {
                 summary: ordered.isEmpty ? "等待 Claude / Codex / Gemini 事件" : "Agent hooks active",
                 points: ordered.isEmpty ? ["安装 hooks", "启动 Agent", "等待事件"] : ["unified store", "agent adapters", "live sessions"]
             ),
-            usageMeters: ordered.map {
-                VibeUsageMeter(agent: $0.agent.displayName, remaining: 1, label: "live")
-            },
+            usageMeters: usageMeters(from: ordered),
             supportedAgents: VibeAgentKind.allCases.map(\.displayName)
         )
+    }
+
+    private func usageMeters(from ordered: [VibeAgentSessionState]) -> [VibeUsageMeter] {
+        VibeAgentKind.allCases.compactMap { agent in
+            guard let session = ordered.first(where: { $0.agent == agent }) else { return nil }
+            let label = session.usageLabel ?? "live"
+            return VibeUsageMeter(agent: agent.displayName, remaining: remaining(from: label), label: label)
+        }
+    }
+
+    private func remaining(from label: String) -> Double {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("%"),
+           let value = Double(trimmed.dropLast()) {
+            return min(max(value / 100, 0), 1)
+        }
+        return 1
     }
 }

@@ -50,6 +50,26 @@ enum VibeGenericAgentHookScript {
                     return data.get(name)
             return default
 
+        def usage_label(data):
+            usage = first_value(data, ["usage", "token_usage", "tokenUsage"])
+            if isinstance(usage, dict):
+                percent = first_value(usage, ["percent", "percentage", "remaining_percent", "remainingPercentage"])
+                if percent is not None:
+                    try:
+                        value = float(percent)
+                        if value <= 1:
+                            value = value * 100
+                        return str(int(round(value))) + "%"
+                    except Exception:
+                        return str(percent)
+                total = first_value(usage, ["total_tokens", "totalTokens", "tokens"])
+                if total is not None:
+                    return str(total) + " tok"
+            label = first_value(data, ["usage_label", "usageLabel", "token_usage_label", "tokenUsageLabel"])
+            if label is not None:
+                return str(label)
+            return None
+
         def main():
             try:
                 data = json.load(sys.stdin)
@@ -68,6 +88,7 @@ enum VibeGenericAgentHookScript {
                 "tool": first_value(data, ["tool_name", "tool", "name"]),
                 "tool_input": first_value(data, ["tool_input", "toolInput", "args"], {}),
                 "tool_use_id": first_value(data, ["tool_use_id", "toolUseId", "call_id"]),
+                "usage_label": usage_label(data),
                 "message": first_value(data, ["message", "prompt", "text"]),
             }
             send_event(state)

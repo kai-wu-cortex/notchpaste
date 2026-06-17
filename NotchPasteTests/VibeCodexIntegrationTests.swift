@@ -56,6 +56,7 @@ struct VibeCodexIntegrationTests {
             tool: "Bash",
             toolInput: ["command": AnyCodable("npm test")],
             toolUseId: "codex-tool-1",
+            usageLabel: nil,
             message: nil
         )
 

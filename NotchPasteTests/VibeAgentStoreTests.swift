@@ -84,4 +84,40 @@ struct VibeAgentStoreTests {
         #expect(store.dashboard.sessions.first?.action == .jump)
         #expect(store.dashboard.sessions.first?.state == "需要终端确认")
     }
+
+    @Test("usage meters aggregate by agent and include Codex usage")
+    @MainActor
+    func usageMetersAggregateByAgentAndIncludeCodexUsage() {
+        let store = VibeAgentStore()
+        store.process(VibeAgentEvent(
+            agent: .claude,
+            sessionID: "claude-1",
+            cwd: "/tmp/claude-app",
+            terminal: "iTerm",
+            event: "PreToolUse",
+            status: .runningTool,
+            usageLabel: "live"
+        ))
+        store.process(VibeAgentEvent(
+            agent: .claude,
+            sessionID: "claude-2",
+            cwd: "/tmp/claude-app",
+            terminal: "iTerm",
+            event: "PreToolUse",
+            status: .runningTool,
+            usageLabel: "live"
+        ))
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-1",
+            cwd: "/tmp/codex-app",
+            terminal: "Terminal",
+            event: "TokenUsage",
+            status: .processing,
+            usageLabel: "42%"
+        ))
+
+        #expect(store.dashboard.usageMeters.map(\.agent) == ["Claude", "Codex"])
+        #expect(store.dashboard.usageMeters.first { $0.agent == "Codex" }?.label == "42%")
+    }
 }
