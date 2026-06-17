@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireHotkey()
 
         monitor.start()
+        VibeAgentBridge.shared.start()
 
         if !paster.isAccessibilityTrusted() && !hasPromptedAccessibility {
             hasPromptedAccessibility = true

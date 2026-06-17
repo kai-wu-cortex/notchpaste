@@ -1,0 +1,149 @@
+import Foundation
+
+struct VibeClaudeHookEvent: Codable, Equatable, Sendable {
+    let sessionId: String
+    let cwd: String
+    let event: String
+    let status: String
+    let pid: Int?
+    let tty: String?
+    let tool: String?
+    let toolInput: [String: AnyCodable]?
+    let toolUseId: String?
+    let notificationType: String?
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case cwd
+        case event
+        case status
+        case pid
+        case tty
+        case tool
+        case toolInput = "tool_input"
+        case toolUseId = "tool_use_id"
+        case notificationType = "notification_type"
+        case message
+    }
+
+    var expectsResponse: Bool {
+        event == "PermissionRequest" && status == "waiting_for_approval"
+    }
+}
+
+struct VibeClaudeHookResponse: Codable, Equatable {
+    let decision: String
+    let reason: String?
+}
+
+extension VibeClaudeHookEvent {
+    var agentEvent: VibeAgentEvent {
+        VibeAgentEvent(
+            agent: .claude,
+            sessionID: sessionId,
+            cwd: cwd,
+            terminal: displayTerminal,
+            event: event,
+            status: agentStatus,
+            toolName: tool,
+            toolInputSummary: toolInputSummary,
+            approvalID: toolUseId,
+            responseMode: expectsResponse ? .socket : .none,
+            createdAt: Date()
+        )
+    }
+
+    private var displayTerminal: String {
+        guard let tty, !tty.isEmpty else { return "Terminal" }
+        return tty.replacingOccurrences(of: "/dev/", with: "")
+    }
+
+    private var agentStatus: VibeAgentStatus {
+        switch status {
+        case "waiting_for_approval": return .waitingForApproval
+        case "waiting_for_input": return .waitingForInput
+        case "running_tool": return .runningTool
+        case "processing", "starting": return .processing
+        case "compacting": return .compacting
+        case "ended": return .completed
+        default: return .unknown
+        }
+    }
+
+    private var toolInputSummary: String? {
+        guard let toolInput else { return nil }
+        return toolInput
+            .sorted { $0.key < $1.key }
+            .prefix(2)
+            .map { "\($0.key): \($0.value.description)" }
+            .joined(separator: ", ")
+    }
+}
+
+struct AnyCodable: Codable, Equatable, @unchecked Sendable {
+    let value: AnyHashable
+
+    init(_ value: AnyHashable) {
+        self.value = value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            value = "null"
+        } else if let bool = try? container.decode(Bool.self) {
+            value = bool
+        } else if let int = try? container.decode(Int.self) {
+            value = int
+        } else if let double = try? container.decode(Double.self) {
+            value = double
+        } else if let string = try? container.decode(String.self) {
+            value = string
+        } else if let array = try? container.decode([AnyCodable].self) {
+            value = array.map(\.description).joined(separator: ", ")
+        } else if let dictionary = try? container.decode([String: AnyCodable].self) {
+            value = dictionary
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value.description)" }
+                .joined(separator: ", ")
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch value.base {
+        case let bool as Bool:
+            try container.encode(bool)
+        case let int as Int:
+            try container.encode(int)
+        case let double as Double:
+            try container.encode(double)
+        case let string as String:
+            try container.encode(string)
+        default:
+            try container.encode(description)
+        }
+    }
+
+    var description: String {
+        switch value.base {
+        case let bool as Bool:
+            return bool ? "true" : "false"
+        case let int as Int:
+            return String(int)
+        case let double as Double:
+            return String(double)
+        case let string as String:
+            return string
+        default:
+            return String(describing: value.base)
+        }
+    }
+
+    static func == (lhs: AnyCodable, rhs: AnyCodable) -> Bool {
+        lhs.description == rhs.description
+    }
+}

@@ -25,7 +25,10 @@ final class NotchViewModel: ObservableObject {
     /// 打开后展示的内容类型。`.list` 是默认剪贴板列表；`.settings` 是设置面板。
     enum ContentType: Equatable {
         case list
+        case vibe
         case settings
+
+        static let panelTabs: [ContentType] = [.list, .vibe]
     }
 
     // MARK: - Published State

@@ -346,17 +346,38 @@ struct NotchView: View {
     @ViewBuilder
     private var openedHeader: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: viewModel.contentType == .settings ? "gearshape.fill" : "doc.on.clipboard")
+            HStack(spacing: 7) {
+                Image(systemName: viewModel.contentType.headerIconName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.7))
-                Text(viewModel.contentType == .settings ? "设置" : "剪贴板 · \(viewModel.itemCount)")
+                Text(viewModel.contentType.headerTitle(itemCount: viewModel.itemCount))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.85))
             }
             .padding(.leading, 6)
 
             Spacer(minLength: 0)
+
+            HStack(spacing: 2) {
+                ForEach(NotchViewModel.ContentType.panelTabs, id: \.self) { tab in
+                    Button {
+                        viewModel.contentType = tab
+                    } label: {
+                        Image(systemName: tab.headerIconName)
+                            .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(viewModel.contentType == tab ? .black : .white.opacity(0.62))
+                        .frame(width: 28, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(viewModel.contentType == tab ? Color.white.opacity(0.88) : Color.white.opacity(0.06))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help(tab.helpTitle)
+                    .accessibilityLabel(Text(tab.helpTitle))
+                }
+            }
+            .padding(.trailing, 8)
 
             // 设置切换按钮（齿轮 ↔ 列表）
             Button {
@@ -394,6 +415,8 @@ struct NotchView: View {
             switch viewModel.contentType {
             case .list:
                 ClipboardListView(viewModel: panelVM)
+            case .vibe:
+                VibeIslandReplicaView()
             case .settings:
                 NotchSettingsView(
                     viewModel: viewModel,
@@ -403,5 +426,39 @@ struct NotchView: View {
             }
         }
         .frame(width: notchSize.width - 24)
+    }
+}
+
+private extension NotchViewModel.ContentType {
+    var headerIconName: String {
+        switch self {
+        case .list: return "doc.on.clipboard"
+        case .vibe: return "sparkles"
+        case .settings: return "gearshape.fill"
+        }
+    }
+
+    var tabTitle: String {
+        switch self {
+        case .list: return "剪贴板"
+        case .vibe: return "Vibe"
+        case .settings: return "设置"
+        }
+    }
+
+    var helpTitle: String {
+        switch self {
+        case .list: return "剪贴板"
+        case .vibe: return "Vibe Island"
+        case .settings: return "设置"
+        }
+    }
+
+    func headerTitle(itemCount: Int) -> String {
+        switch self {
+        case .list: return "剪贴板 · \(itemCount)"
+        case .vibe: return "Vibe Island"
+        case .settings: return "设置"
+        }
     }
 }
