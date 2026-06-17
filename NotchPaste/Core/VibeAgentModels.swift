@@ -53,6 +53,70 @@ enum VibeAgentResponseMode: String, Codable, Equatable {
     case none
 }
 
+enum VibeAgentProcessResolver {
+    static func kind(startingAt pid: Int?) -> VibeAgentKind? {
+        guard var currentPID = pid else { return nil }
+        var visited = Set<Int>()
+
+        for _ in 0..<12 {
+            guard currentPID > 1, !visited.contains(currentPID) else { return nil }
+            visited.insert(currentPID)
+
+            if let commandLine = commandLine(for: currentPID),
+               let kind = kind(fromCommandLine: commandLine) {
+                return kind
+            }
+
+            guard let parentPID = parentProcessID(for: currentPID) else { return nil }
+            currentPID = parentPID
+        }
+
+        return nil
+    }
+
+    static func kind(fromCommandLine commandLine: String) -> VibeAgentKind? {
+        let tokens = commandLine
+            .lowercased()
+            .split { $0 == " " || $0 == "\t" || $0 == "/" }
+            .map(String.init)
+
+        if tokens.contains("codex") { return .codex }
+        if tokens.contains("claude") { return .claude }
+        if tokens.contains("gemini") { return .gemini }
+        return nil
+    }
+
+    private static func commandLine(for pid: Int) -> String? {
+        processOutput(arguments: ["-p", String(pid), "-o", "args="])
+    }
+
+    private static func parentProcessID(for pid: Int) -> Int? {
+        processOutput(arguments: ["-p", String(pid), "-o", "ppid="]).flatMap(Int.init)
+    }
+
+    private static func processOutput(arguments: [String]) -> String? {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.isEmpty ? nil : output
+    }
+}
+
 struct VibeAgentEvent: Equatable {
     let agent: VibeAgentKind
     let sessionID: String
@@ -212,11 +276,28 @@ final class VibeAgentStore: ObservableObject {
     private var sessions: [String: VibeAgentSessionState] = [:]
 
     func process(_ event: VibeAgentEvent) {
+        removeStaleMismatchedSessions(for: event)
         let key = "\(event.agent.rawValue):\(event.sessionID)"
         var session = sessions[key] ?? VibeAgentSessionState(event: event)
         session.apply(event)
         sessions[key] = session
         rebuildDashboard()
+    }
+
+    private func removeStaleMismatchedSessions(for event: VibeAgentEvent) {
+        let incomingWorkspace = normalizedWorkspace(event.cwd)
+        let staleKeys = sessions.compactMap { key, session -> String? in
+            guard session.agent != event.agent else { return nil }
+            guard session.sessionID == event.sessionID
+                || (normalizedWorkspace(session.cwd) == incomingWorkspace && session.terminal == event.terminal)
+            else { return nil }
+            return key
+        }
+        staleKeys.forEach { sessions.removeValue(forKey: $0) }
+    }
+
+    private func normalizedWorkspace(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     func allow(sessionID: UUID?) {

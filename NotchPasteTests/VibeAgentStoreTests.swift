@@ -120,4 +120,42 @@ struct VibeAgentStoreTests {
         #expect(store.dashboard.usageMeters.map(\.agent) == ["Claude", "Codex"])
         #expect(store.dashboard.usageMeters.first { $0.agent == "Codex" }?.label == "42%")
     }
+
+    @Test("new Codex event replaces stale Claude event for same workspace")
+    @MainActor
+    func codexEventReplacesStaleClaudeEventForSameWorkspace() {
+        let store = VibeAgentStore()
+        let workspace = "/Users/kyle/codex project/pasteboard"
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.process(VibeAgentEvent(
+            agent: .claude,
+            sessionID: "stale",
+            cwd: workspace,
+            terminal: "Terminal",
+            event: "Stop",
+            status: .completed,
+            createdAt: base
+        ))
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-live",
+            cwd: workspace,
+            terminal: "Terminal",
+            event: "Stop",
+            status: .completed,
+            responseMode: .terminalHandoff,
+            createdAt: base.addingTimeInterval(1)
+        ))
+
+        #expect(store.dashboard.sessions.map(\.agent) == ["Codex"])
+    }
+
+    @Test("process command identifies agent kind")
+    func processCommandIdentifiesAgentKind() {
+        #expect(VibeAgentProcessResolver.kind(fromCommandLine: "/opt/homebrew/bin/codex exec") == .codex)
+        #expect(VibeAgentProcessResolver.kind(fromCommandLine: "/Users/kyle/.npm/bin/claude") == .claude)
+        #expect(VibeAgentProcessResolver.kind(fromCommandLine: "/opt/homebrew/bin/gemini --model pro") == .gemini)
+        #expect(VibeAgentProcessResolver.kind(fromCommandLine: "/bin/zsh -l") == nil)
+    }
 }

@@ -60,6 +60,32 @@ struct VibeClaudeIntegrationTests {
         #expect(session?.terminalProcessID == 123)
     }
 
+    @Test("Claude socket event can be reclassified as Codex")
+    @MainActor
+    func claudeSocketEventCanBeReclassifiedAsCodex() {
+        let store = VibeAgentStore()
+        let event = VibeClaudeHookEvent(
+            sessionId: "codex-session",
+            cwd: "/Users/kyle/codex project/pasteboard",
+            event: "PermissionRequest",
+            status: "waiting_for_approval",
+            pid: 123,
+            tty: "/dev/ttys001",
+            tool: "Bash",
+            toolInput: ["command": AnyCodable("npm test")],
+            toolUseId: "tool-1",
+            notificationType: nil,
+            message: nil
+        )
+
+        store.process(event.agentEvent(resolvedAgent: .codex))
+
+        let session = store.dashboard.sessions.first
+        #expect(session?.agent == "Codex")
+        #expect(session?.action == .jump)
+        #expect(session?.responseMode == .terminalHandoff)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("notchpaste-claude-tests-\(UUID().uuidString)", isDirectory: true)

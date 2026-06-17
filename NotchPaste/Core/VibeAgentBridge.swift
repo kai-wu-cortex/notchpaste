@@ -13,7 +13,8 @@ final class VibeAgentBridge {
 
         VibeClaudeHookSocketServer.shared.start { event in
             Task { @MainActor in
-                VibeAgentStore.shared.process(event.agentEvent)
+                let resolvedAgent = VibeAgentProcessResolver.kind(startingAt: event.pid) ?? .claude
+                VibeAgentStore.shared.process(event.agentEvent(resolvedAgent: resolvedAgent))
             }
         }
 

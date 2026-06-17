@@ -39,8 +39,21 @@ struct VibeClaudeHookResponse: Codable, Equatable {
 
 extension VibeClaudeHookEvent {
     var agentEvent: VibeAgentEvent {
-        VibeAgentEvent(
-            agent: .claude,
+        agentEvent(resolvedAgent: .claude)
+    }
+
+    func agentEvent(resolvedAgent: VibeAgentKind) -> VibeAgentEvent {
+        let mode: VibeAgentResponseMode
+        if resolvedAgent == .claude, expectsResponse {
+            mode = .socket
+        } else if agentStatus == .waitingForApproval {
+            mode = .terminalHandoff
+        } else {
+            mode = .none
+        }
+
+        return VibeAgentEvent(
+            agent: resolvedAgent,
             sessionID: sessionId,
             cwd: cwd,
             terminal: displayTerminal,
@@ -50,7 +63,7 @@ extension VibeClaudeHookEvent {
             toolName: tool,
             toolInputSummary: toolInputSummary,
             approvalID: toolUseId,
-            responseMode: expectsResponse ? .socket : .none,
+            responseMode: mode,
             createdAt: Date()
         )
     }
