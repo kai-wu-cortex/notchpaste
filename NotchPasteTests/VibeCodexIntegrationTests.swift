@@ -17,6 +17,12 @@ struct VibeCodexIntegrationTests {
                 "hooks": [
                   { "type": "command", "command": "/existing/hook.sh PreToolUse" }
                 ]
+              },
+              {
+                "matcher": "*",
+                "hooks": [
+                  { "type": "command", "command": "python3 '/Users/kyle/.codex/hooks/claude-island-state.py'" }
+                ]
               }
             ]
           }
@@ -40,6 +46,7 @@ struct VibeCodexIntegrationTests {
 
         #expect(commands.contains("/existing/hook.sh PreToolUse"))
         #expect(commands.contains { $0.contains("notchpaste-agent-state.py") })
+        #expect(!commands.contains { $0.contains("claude-island-state.py") })
         #expect(hooks["UserPromptSubmit"] != nil)
         #expect(hooks["Stop"] != nil)
     }

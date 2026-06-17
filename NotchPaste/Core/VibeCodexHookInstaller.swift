@@ -57,7 +57,7 @@ enum VibeCodexHookInstaller {
                 guard var hookEntries = entry["hooks"] as? [[String: Any]] else { return entry }
                 hookEntries.removeAll { hook in
                     let command = hook["command"] as? String ?? ""
-                    return command.contains("notchpaste-agent-state.py")
+                    return isManagedHookCommand(command)
                 }
                 guard !hookEntries.isEmpty else { return nil }
                 var updated = entry
@@ -69,6 +69,12 @@ enum VibeCodexHookInstaller {
             }
         }
         return cleaned
+    }
+
+    private static func isManagedHookCommand(_ command: String) -> Bool {
+        command.contains("notchpaste-agent-state.py")
+            || command.contains("claude-island-state.py")
+            || command.contains("claude-island.sock")
     }
 
     static func scriptContents(socketPath: String) -> String {
