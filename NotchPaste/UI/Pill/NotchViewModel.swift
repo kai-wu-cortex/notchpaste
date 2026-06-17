@@ -19,6 +19,7 @@ final class NotchViewModel: ObservableObject {
         case click
         case hover
         case copyHint
+        case agentInteraction
         case unknown
     }
 
@@ -184,6 +185,11 @@ final class NotchViewModel: ObservableObject {
     func notchClose() {
         status = .closed
         contentType = .list
+    }
+
+    func presentAgentInteraction() {
+        contentType = .vibe
+        notchOpen(reason: .agentInteraction)
     }
 
     func toggle() {

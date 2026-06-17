@@ -31,4 +31,19 @@ struct NotchViewModelTests {
 
         #expect(model.contentType == .list)
     }
+
+    @Test("agent interaction opens vibe content")
+    func agentInteractionOpensVibeContent() {
+        let model = NotchViewModel(
+            deviceNotchRect: .init(x: 0, y: 0, width: 180, height: 32),
+            screenRect: .init(x: 0, y: 0, width: 1512, height: 982),
+            windowHeight: 750,
+            hasPhysicalNotch: true
+        )
+
+        model.presentAgentInteraction()
+
+        #expect(model.status == .opened)
+        #expect(model.contentType == .vibe)
+    }
 }

@@ -40,6 +40,33 @@ struct VibeIslandDashboardTests {
         #expect(row?.primaryActionTitle == "Allow")
     }
 
+    @Test("dashboard exposes notch activity for running and interactive sessions")
+    func dashboardExposesNotchActivityForRunningAndInteractiveSessions() {
+        #expect(VibeIslandDashboard.empty.notchActivity == .idle)
+        #expect(VibeIslandDashboard.demo.notchActivity == .needsInteraction)
+
+        var runningDashboard = VibeIslandDashboard.demo
+        runningDashboard.sessions.removeAll { $0.action == .approval }
+
+        #expect(runningDashboard.notchActivity == .running)
+    }
+
+    @Test("open selects conversation detail")
+    @MainActor
+    func openSelectsConversationDetail() {
+        let model = VibeIslandDashboardModel(dashboard: .demo)
+        let session = model.dashboard.sessions.first { $0.agent == "Codex" }
+
+        model.open(sessionID: session?.id)
+
+        #expect(model.selectedNativeRow?.id == session?.id)
+        #expect(model.selectedNativeRow?.detail == session?.detail)
+
+        model.closeConversation()
+
+        #expect(model.selectedNativeRow == nil)
+    }
+
     @Test("completed session jumps back to its terminal")
     func completedSessionJumpsBackToItsTerminal() {
         let completed = VibeIslandDashboard.demo.sessions.first { $0.action == .jump }

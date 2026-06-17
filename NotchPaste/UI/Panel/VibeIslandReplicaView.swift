@@ -70,6 +70,24 @@ struct VibeIslandDashboard {
         usageMeters: [],
         supportedAgents: []
     )
+
+    var notchActivity: VibeNotchActivity {
+        if sessions.contains(where: { $0.action == .approval || $0.action == .question }) {
+            return .needsInteraction
+        }
+
+        if sessions.contains(where: { $0.action == .monitor }) {
+            return .running
+        }
+
+        return .idle
+    }
+}
+
+enum VibeNotchActivity: Equatable {
+    case idle
+    case running
+    case needsInteraction
 }
 
 struct VibeSession: Identifiable {
@@ -235,6 +253,15 @@ final class VibeIslandDashboardModel: ObservableObject {
         }
     }
 
+    var selectedNativeRow: VibeNativeSessionRow? {
+        guard let selectedSessionID else { return nil }
+        return nativeRows.first { $0.id == selectedSessionID }
+    }
+
+    var pendingInteractionRow: VibeNativeSessionRow? {
+        nativeRows.first { $0.showsInlineApproval }
+    }
+
     func allow(sessionID: UUID?) {
         if let agentStore {
             agentStore.allow(sessionID: sessionID)
@@ -278,6 +305,10 @@ final class VibeIslandDashboardModel: ObservableObject {
         selectedSessionID = session.id
         lastAction = "跳回 \(session.terminal)"
         writeResponse(sessionID: sessionID, action: .jump, value: session.terminal)
+    }
+
+    func closeConversation() {
+        selectedSessionID = nil
     }
 
     private func updateApproval(sessionID: UUID?, state: String, detail: String, feedback: String) {
@@ -329,17 +360,28 @@ struct VibeIslandReplicaView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if model.nativeRows.isEmpty {
-                emptyState
-            } else {
-                sessionList
+        ZStack {
+            VStack(spacing: 0) {
+                if let selectedRow = model.selectedNativeRow {
+                    conversationDetail(selectedRow)
+                } else if model.nativeRows.isEmpty {
+                    emptyState
+                } else {
+                    sessionList
+                }
+            }
+
+            if model.selectedNativeRow == nil, let row = model.pendingInteractionRow {
+                permissionRequestModal(row)
+                    .transition(.scale(scale: 0.92, anchor: .top).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 6)
         .padding(.bottom, 8)
         .background(Color.black)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.selectedSessionID)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingInteractionRow?.id)
     }
 
     private var emptyState: some View {
@@ -365,6 +407,191 @@ struct VibeIslandReplicaView: View {
             .padding(.vertical, 4)
         }
         .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private func conversationDetail(_ row: VibeNativeSessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                iconButton("chevron.left") {
+                    model.closeConversation()
+                }
+
+                stateIndicator(for: row)
+                    .frame(width: 14)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(row.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+
+                        Text(row.subtitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.36))
+
+                        Text(row.usageLabel ?? row.state)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.34))
+                    }
+
+                    Text(row.projectTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.86))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                rowActions(row)
+            }
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(row.state)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(row.isWaitingForApproval ? TerminalPalette.amber : row.tint)
+
+                    conversationBlock(title: "Latest event", value: row.detail.isEmpty ? row.state : row.detail, tint: row.tint)
+
+                    if row.isWaitingForApproval {
+                        permissionDiffBlock(row)
+                    }
+
+                    if !model.lastAction.isEmpty {
+                        Text(model.lastAction)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.34))
+                            .padding(.top, 2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 8)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func conversationBlock(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.white.opacity(0.36))
+
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.84))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tint.opacity(0.08))
+        )
+    }
+
+    private func permissionRequestModal(_ row: VibeNativeSessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(row.tint.opacity(0.55))
+                    .frame(width: 6, height: 6)
+
+                Text("Permission Request")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(TerminalPalette.amber)
+
+                Text(permissionTitle(for: row))
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .foregroundColor(TerminalPalette.amber)
+                    .lineLimit(1)
+
+                Text(permissionPath(for: row))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.86))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            permissionDiffBlock(row)
+                .frame(height: 82)
+                .clipped()
+
+            HStack(spacing: 8) {
+                Button("Deny") {
+                    model.deny(sessionID: row.id)
+                }
+                .buttonStyle(VibeModalButtonStyle(filled: false))
+
+                Button("Allow") {
+                    model.allow(sessionID: row.id)
+                }
+                .buttonStyle(VibeModalButtonStyle(filled: true))
+            }
+        }
+        .padding(16)
+        .frame(width: 390)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.96))
+                .shadow(color: .black.opacity(0.75), radius: 18, y: 10)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
+        .padding(.top, 28)
+    }
+
+    private func permissionDiffBlock(_ row: VibeNativeSessionRow) -> some View {
+        let lines = permissionPreviewLines(for: row)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line.text)
+                    .foregroundColor(line.color)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(line.background)
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func permissionPreviewLines(for row: VibeNativeSessionRow) -> [PermissionPreviewLine] {
+        if row.detail.localizedCaseInsensitiveContains("edit ") {
+            return [
+                PermissionPreviewLine("12 const verify = (token) =>", color: .white.opacity(0.24), background: .white.opacity(0.04)),
+                PermissionPreviewLine("13 - jwt.verify(token);", color: Color(red: 1.0, green: 0.55, blue: 0.5), background: .red.opacity(0.14)),
+                PermissionPreviewLine("13 + if (!token) throw new", color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10)),
+                PermissionPreviewLine("14 + AuthError('missing');", color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10))
+            ]
+        }
+
+        return [
+            PermissionPreviewLine(row.state, color: .white.opacity(0.24), background: .white.opacity(0.04)),
+            PermissionPreviewLine(row.detail.isEmpty ? row.projectTitle : row.detail, color: .white.opacity(0.82), background: Color.white.opacity(0.03)),
+            PermissionPreviewLine("Waiting for approval", color: TerminalPalette.amber, background: TerminalPalette.amber.opacity(0.10))
+        ]
+    }
+
+    private func permissionTitle(for row: VibeNativeSessionRow) -> String {
+        row.detail.split(separator: " ").first.map(String.init) ?? "Edit"
+    }
+
+    private func permissionPath(for row: VibeNativeSessionRow) -> String {
+        let parts = row.detail.split(separator: " ").map(String.init)
+        guard parts.count > 1 else { return row.projectTitle }
+        return parts.dropFirst().prefix { !$0.hasPrefix("+") && !$0.hasPrefix("-") }.joined(separator: " ")
     }
 
     private func nativeRow(_ row: VibeNativeSessionRow) -> some View {
@@ -500,6 +727,18 @@ private struct TerminalPalette {
     static let green = Color(red: 0.18, green: 0.82, blue: 0.4)
 }
 
+private struct PermissionPreviewLine {
+    let text: String
+    let color: Color
+    let background: Color
+
+    init(_ text: String, color: Color, background: Color) {
+        self.text = text
+        self.color = color
+        self.background = background
+    }
+}
+
 private struct VibeNativeButtonStyle: ButtonStyle {
     let filled: Bool
     let tint: Color
@@ -513,6 +752,22 @@ private struct VibeNativeButtonStyle: ButtonStyle {
             .background(
                 Capsule()
                     .fill(filled ? tint.opacity(configuration.isPressed ? 0.76 : 0.92) : tint.opacity(configuration.isPressed ? 0.22 : 0.12))
+            )
+    }
+}
+
+private struct VibeModalButtonStyle: ButtonStyle {
+    let filled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(filled ? .black : .white.opacity(0.84))
+            .frame(maxWidth: .infinity)
+            .frame(height: 31)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(filled ? Color.white.opacity(configuration.isPressed ? 0.78 : 0.92) : Color.white.opacity(configuration.isPressed ? 0.18 : 0.13))
             )
     }
 }

@@ -16,6 +16,7 @@ struct NotchView: View {
     let onRequestPermission: () -> Void
     let onQuit: () -> Void
     @StateObject private var filePreview = FilePreviewProvider()
+    @ObservedObject private var vibeStore = VibeAgentStore.shared
 
     /// closed 态尺寸：由 ScreenSelector 提供的物理刘海几何驱动。
     private var closedNotchSize: CGSize {
@@ -37,6 +38,20 @@ struct NotchView: View {
         case .file, .image: return true
         default: return false
         }
+    }
+
+    private var isAgentActivityExpanded: Bool {
+        viewModel.status == .closed
+            && viewModel.copyHint == nil
+            && vibeStore.dashboard.notchActivity != .idle
+    }
+
+    private var needsAgentInteraction: Bool {
+        vibeStore.dashboard.notchActivity == .needsInteraction
+    }
+
+    private var agentAttentionColor: Color {
+        Color(red: 1.0, green: 0.55, blue: 0.16)
     }
 
     /// 当前 file copyHint 中的文件数量（不到 file 类型则为 0）。
@@ -66,6 +81,12 @@ struct NotchView: View {
                     height: closedNotchSize.height + 6
                 )
             }
+            if isAgentActivityExpanded {
+                return CGSize(
+                    width: closedNotchSize.width + (needsAgentInteraction ? 160 : 110),
+                    height: closedNotchSize.height + 6
+                )
+            }
             return closedNotchSize
         case .opened: return viewModel.openedSize
         }
@@ -80,12 +101,12 @@ struct NotchView: View {
 
     private var topCornerRadius: CGFloat {
         if viewModel.status == .opened { return CornerRadii.opened.top }
-        return isCopyHintExpanded ? CornerRadii.closedExpanded.top : CornerRadii.closed.top
+        return (isCopyHintExpanded || isAgentActivityExpanded) ? CornerRadii.closedExpanded.top : CornerRadii.closed.top
     }
 
     private var bottomCornerRadius: CGFloat {
         if viewModel.status == .opened { return CornerRadii.opened.bottom }
-        return isCopyHintExpanded ? CornerRadii.closedExpanded.bottom : CornerRadii.closed.bottom
+        return (isCopyHintExpanded || isAgentActivityExpanded) ? CornerRadii.closedExpanded.bottom : CornerRadii.closed.bottom
     }
 
     private var currentNotchShape: NotchShape {
@@ -100,6 +121,16 @@ struct NotchView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .preferredColorScheme(.dark)
+        .onAppear {
+            if vibeStore.dashboard.notchActivity == .needsInteraction {
+                viewModel.presentAgentInteraction()
+            }
+        }
+        .onChange(of: vibeStore.dashboard.notchActivity) { _, activity in
+            if activity == .needsInteraction {
+                viewModel.presentAgentInteraction()
+            }
+        }
     }
 
     // MARK: - Notch container（vibe-notch 的核心 layout）
@@ -202,7 +233,11 @@ struct NotchView: View {
             case .image(let data):
                 imageHint(data: data)
             case .none:
-                Color.clear
+                if isAgentActivityExpanded {
+                    agentActivityHint
+                } else {
+                    Color.clear
+                }
             }
         }
         .frame(
@@ -293,6 +328,26 @@ struct NotchView: View {
         .padding(.trailing, 14)
         .frame(maxWidth: 220, alignment: .trailing)
         .transition(.opacity)
+    }
+
+    private var agentActivityHint: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.48)
+                .tint(needsAgentInteraction ? agentAttentionColor : .cyan)
+                .frame(width: 18, height: 18)
+
+            Text(needsAgentInteraction ? "需要处理" : "运行中")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(needsAgentInteraction ? agentAttentionColor : .white.opacity(0.86))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 12)
+        .transition(.opacity.combined(with: .scale(scale: 0.94)))
     }
 
     /// 图片预览：左侧大缩略图，右侧尺寸/字节信息。
