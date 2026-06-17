@@ -44,6 +44,7 @@ extension VibeClaudeHookEvent {
             sessionID: sessionId,
             cwd: cwd,
             terminal: displayTerminal,
+            terminalProcessID: pid,
             event: event,
             status: agentStatus,
             toolName: tool,

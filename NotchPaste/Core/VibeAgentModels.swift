@@ -58,6 +58,7 @@ struct VibeAgentEvent: Equatable {
     let sessionID: String
     let cwd: String
     let terminal: String
+    let terminalProcessID: Int?
     let event: String
     let status: VibeAgentStatus
     let toolName: String?
@@ -75,6 +76,7 @@ struct VibeAgentEvent: Equatable {
         sessionID: String,
         cwd: String,
         terminal: String = "Terminal",
+        terminalProcessID: Int? = nil,
         event: String,
         status: VibeAgentStatus,
         toolName: String? = nil,
@@ -91,6 +93,7 @@ struct VibeAgentEvent: Equatable {
         self.sessionID = sessionID
         self.cwd = cwd
         self.terminal = terminal
+        self.terminalProcessID = terminalProcessID
         self.event = event
         self.status = status
         self.toolName = toolName
@@ -111,6 +114,7 @@ struct VibeAgentSessionState: Equatable {
     let sessionID: String
     var cwd: String
     var terminal: String
+    var terminalProcessID: Int?
     var event: String
     var status: VibeAgentStatus
     var title: String
@@ -127,6 +131,7 @@ struct VibeAgentSessionState: Equatable {
         sessionID = event.sessionID
         cwd = event.cwd
         terminal = event.terminal
+        terminalProcessID = event.terminalProcessID
         self.event = event.event
         status = event.status
         title = URL(fileURLWithPath: event.cwd).lastPathComponent
@@ -141,6 +146,7 @@ struct VibeAgentSessionState: Equatable {
     mutating func apply(_ event: VibeAgentEvent) {
         cwd = event.cwd
         terminal = event.terminal
+        terminalProcessID = event.terminalProcessID
         self.event = event.event
         status = event.status
         title = URL(fileURLWithPath: event.cwd).lastPathComponent
@@ -161,6 +167,7 @@ struct VibeAgentSessionState: Equatable {
             id: id,
             agent: agent.displayName,
             terminal: terminal,
+            terminalProcessID: terminalProcessID,
             title: title.isEmpty ? agent.displayName : title,
             detail: detail,
             elapsed: "live",

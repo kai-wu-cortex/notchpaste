@@ -57,6 +57,7 @@ struct VibeClaudeIntegrationTests {
         #expect(session?.agentSessionID == "session-1")
         #expect(session?.approvalID == "tool-1")
         #expect(session?.responseMode == .socket)
+        #expect(session?.terminalProcessID == 123)
     }
 
     private func temporaryDirectory() throws -> URL {

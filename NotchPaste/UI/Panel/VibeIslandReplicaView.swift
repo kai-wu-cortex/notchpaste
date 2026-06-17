@@ -95,6 +95,7 @@ struct VibeSession: Identifiable {
     let id: UUID
     let agent: String
     let terminal: String
+    let terminalProcessID: Int?
     let title: String
     var detail: String
     let elapsed: String
@@ -112,6 +113,7 @@ struct VibeSession: Identifiable {
         id: UUID = UUID(),
         agent: String,
         terminal: String,
+        terminalProcessID: Int? = nil,
         title: String,
         detail: String,
         elapsed: String,
@@ -128,6 +130,7 @@ struct VibeSession: Identifiable {
         self.id = id
         self.agent = agent
         self.terminal = terminal
+        self.terminalProcessID = terminalProcessID
         self.title = title
         self.detail = detail
         self.elapsed = elapsed
@@ -409,8 +412,10 @@ final class VibeIslandDashboardModel: ObservableObject {
 
 private enum VibeTerminalJumper {
     static func jump(to session: VibeSession) {
-        guard let app = runningApplication(named: session.terminal) else { return }
-        app.activate(options: [.activateIgnoringOtherApps])
+        guard let app = session.terminalProcessID.flatMap(runningApplicationInProcessTree(startingAt:))
+            ?? runningApplication(named: session.terminal)
+        else { return }
+        app.activate(options: [])
     }
 
     private static func runningApplication(named terminal: String) -> NSRunningApplication? {
@@ -419,6 +424,48 @@ private enum VibeTerminalJumper {
             guard let localizedName = app.localizedName?.lowercased() else { return false }
             return names.contains(localizedName)
         }
+    }
+
+    private static func runningApplicationInProcessTree(startingAt pid: Int) -> NSRunningApplication? {
+        var currentPID = pid
+        var visited = Set<Int>()
+
+        for _ in 0..<12 {
+            guard currentPID > 1, !visited.contains(currentPID) else { return nil }
+            visited.insert(currentPID)
+
+            if let app = NSRunningApplication(processIdentifier: pid_t(currentPID)),
+               app.activationPolicy == .regular {
+                return app
+            }
+
+            guard let parentPID = parentProcessID(for: currentPID) else { return nil }
+            currentPID = parentPID
+        }
+
+        return nil
+    }
+
+    private static func parentProcessID(for pid: Int) -> Int? {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "ppid="]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(output)
     }
 
     private static func candidateNames(for terminal: String) -> [String] {
@@ -433,6 +480,8 @@ private enum VibeTerminalJumper {
             return ["Warp"]
         case "wezterm":
             return ["WezTerm"]
+        case "mori":
+            return ["Mori", "mori"]
         default:
             return [terminal]
         }

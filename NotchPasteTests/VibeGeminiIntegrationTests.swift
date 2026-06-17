@@ -59,6 +59,7 @@ struct VibeGeminiIntegrationTests {
         #expect(session?.state == "Running Tool")
         #expect(session?.action == .monitor)
         #expect(session?.responseMode == VibeAgentResponseMode.none)
+        #expect(session?.terminalProcessID == 456)
     }
 
     private func temporaryDirectory() throws -> URL {

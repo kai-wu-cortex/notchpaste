@@ -70,6 +70,7 @@ struct VibeCodexIntegrationTests {
         #expect(session?.action == .jump)
         #expect(session?.responseMode == .terminalHandoff)
         #expect(session?.approvalID == "codex-tool-1")
+        #expect(session?.terminalProcessID == 123)
     }
 
     private func temporaryDirectory() throws -> URL {
