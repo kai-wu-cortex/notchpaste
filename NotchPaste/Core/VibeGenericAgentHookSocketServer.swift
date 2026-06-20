@@ -14,6 +14,7 @@ struct VibeGenericAgentHookEvent: Codable, Equatable, Sendable {
     let toolUseId: String?
     let usageLabel: String?
     let message: String?
+    let questionOptions: [String]?
 
     enum CodingKeys: String, CodingKey {
         case agent
@@ -28,6 +29,7 @@ struct VibeGenericAgentHookEvent: Codable, Equatable, Sendable {
         case toolUseId = "tool_use_id"
         case usageLabel = "usage_label"
         case message
+        case questionOptions = "question_options"
     }
 
     var agentEvent: VibeAgentEvent? {
@@ -44,7 +46,8 @@ struct VibeGenericAgentHookEvent: Codable, Equatable, Sendable {
                 toolInput: toolInput,
                 toolUseId: toolUseId,
                 usageLabel: usageLabel,
-                message: message
+                message: message,
+                questionOptions: questionOptions
             ).agentEvent
         case "gemini":
             return VibeGeminiHookEvent(
@@ -58,7 +61,8 @@ struct VibeGenericAgentHookEvent: Codable, Equatable, Sendable {
                 toolInput: toolInput,
                 toolUseId: toolUseId,
                 usageLabel: usageLabel,
-                message: message
+                message: message,
+                questionOptions: questionOptions
             ).agentEvent
         default:
             return nil

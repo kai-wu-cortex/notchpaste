@@ -77,6 +77,108 @@ struct PasteServiceTests {
     }
 }
 
+@Suite("PreferencesStore")
+struct PreferencesStoreTests {
+
+    @Test("agent activity icon preferences default to current behavior")
+    func agentActivityIconPreferencesDefaultToCurrentBehavior() {
+        let store = PreferencesStore(defaults: makeDefaults())
+
+        #expect(store.agentRunningIconStyle == .spinner)
+        #expect(store.agentAttentionIconStyle == .spinner)
+        #expect(store.agentActivityIconPosition == .leading)
+        #expect(store.agentActivityIconSize == 18)
+        #expect(store.agentActivityIconOffsetX == 0)
+        #expect(store.agentActivityIconOffsetY == 0)
+        #expect(store.agentActivityIconEffect == .glow)
+        #expect(store.agentRunningCustomIconPath == nil)
+        #expect(store.agentAttentionCustomIconPath == nil)
+        #expect(store.agentRunningNotchWidthAdjustment == 0)
+        #expect(store.agentRunningNotchHeightAdjustment == 0)
+        #expect(store.agentAttentionNotchWidthAdjustment == 0)
+        #expect(store.agentAttentionNotchHeightAdjustment == 0)
+    }
+
+    @Test("agent activity icon preferences persist selected styles and position")
+    func agentActivityIconPreferencesPersistSelectedStylesAndPosition() {
+        let defaults = makeDefaults()
+        let store = PreferencesStore(defaults: defaults)
+
+        store.agentRunningIconStyle = .cascadeSymbol
+        store.agentAttentionIconStyle = .bolt
+        store.agentActivityIconPosition = .trailing
+        store.agentActivityIconSize = 24
+        store.agentActivityIconOffsetX = -7
+        store.agentActivityIconOffsetY = 3
+        store.agentActivityIconEffect = .bounce
+        store.agentRunningCustomIconPath = "/tmp/running.png"
+        store.agentAttentionCustomIconPath = "/tmp/attention.svg"
+        store.agentRunningNotchWidthAdjustment = 18
+        store.agentRunningNotchHeightAdjustment = 4
+        store.agentAttentionNotchWidthAdjustment = -12
+        store.agentAttentionNotchHeightAdjustment = 8
+
+        let restored = PreferencesStore(defaults: defaults)
+
+        #expect(restored.agentRunningIconStyle == .cascadeSymbol)
+        #expect(restored.agentAttentionIconStyle == .bolt)
+        #expect(restored.agentActivityIconPosition == .trailing)
+        #expect(restored.agentActivityIconSize == 24)
+        #expect(restored.agentActivityIconOffsetX == -7)
+        #expect(restored.agentActivityIconOffsetY == 3)
+        #expect(restored.agentActivityIconEffect == .bounce)
+        #expect(restored.agentRunningCustomIconPath == "/tmp/running.png")
+        #expect(restored.agentAttentionCustomIconPath == "/tmp/attention.svg")
+        #expect(restored.agentRunningNotchWidthAdjustment == 18)
+        #expect(restored.agentRunningNotchHeightAdjustment == 4)
+        #expect(restored.agentAttentionNotchWidthAdjustment == 18)
+        #expect(restored.agentAttentionNotchHeightAdjustment == 8)
+    }
+
+    @Test("agent activity icon styles include pixel symbols and system presets")
+    func agentActivityIconStylesIncludePixelSymbolsAndSystemPresets() {
+        let styles = Set(AgentActivityIconStyle.allCases)
+
+        #expect(styles.contains(.symbol))
+        #expect(styles.contains(.cascadeSymbol))
+        #expect(styles.contains(.command))
+        #expect(styles.contains(.braces))
+        #expect(styles.contains(.cpu))
+        #expect(styles.contains(.network))
+        #expect(styles.contains(.wand))
+        #expect(styles.contains(.paperplane))
+
+        for style in AgentActivityIconStyle.allCases {
+            #expect(!style.title.isEmpty)
+            #expect(!style.systemImageName.isEmpty)
+        }
+    }
+
+    @Test("agent activity icon effects include animation presets")
+    func agentActivityIconEffectsIncludeAnimationPresets() {
+        let effects = Set(AgentActivityIconEffect.allCases)
+
+        #expect(effects.contains(.none))
+        #expect(effects.contains(.glow))
+        #expect(effects.contains(.breathe))
+        #expect(effects.contains(.spin))
+        #expect(effects.contains(.bounce))
+        #expect(effects.contains(.edgeBloom))
+
+        for effect in AgentActivityIconEffect.allCases {
+            #expect(!effect.title.isEmpty)
+            #expect(!effect.systemImageName.isEmpty)
+        }
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suiteName = "PreferencesStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+}
+
 private final class SpyClipboardChangeIgnorer: ClipboardChangeIgnoring {
     var ignoreCallCount = 0
     var ignoredItems: [ClipboardItem] = []

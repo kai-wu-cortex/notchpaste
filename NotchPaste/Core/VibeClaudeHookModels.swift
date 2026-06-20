@@ -12,6 +12,8 @@ struct VibeClaudeHookEvent: Codable, Equatable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    let questionOptions: [String]?
+    let agent: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -25,6 +27,8 @@ struct VibeClaudeHookEvent: Codable, Equatable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case message
+        case questionOptions = "question_options"
+        case agent
     }
 
     var expectsResponse: Bool {
@@ -39,7 +43,7 @@ struct VibeClaudeHookResponse: Codable, Equatable {
 
 extension VibeClaudeHookEvent {
     var agentEvent: VibeAgentEvent {
-        agentEvent(resolvedAgent: .claude)
+        agentEvent(resolvedAgent: declaredAgentKind ?? .claude)
     }
 
     func agentEvent(resolvedAgent: VibeAgentKind) -> VibeAgentEvent {
@@ -63,6 +67,9 @@ extension VibeClaudeHookEvent {
             toolName: tool,
             toolInputSummary: toolInputSummary,
             approvalID: toolUseId,
+            question: message,
+            questionOptions: questionOptions ?? [],
+            codeDiff: VibeAgentCodeDiffBuilder.lines(toolName: tool, toolInput: toolInput),
             responseMode: mode,
             createdAt: Date()
         )
@@ -71,6 +78,14 @@ extension VibeClaudeHookEvent {
     private var displayTerminal: String {
         guard let tty, !tty.isEmpty else { return "Terminal" }
         return tty.replacingOccurrences(of: "/dev/", with: "")
+    }
+
+    var declaredAgentKind: VibeAgentKind? {
+        guard let agent = agent?.lowercased() else { return nil }
+        if agent.contains("codex") { return .codex }
+        if agent.contains("claude") { return .claude }
+        if agent.contains("gemini") { return .gemini }
+        return nil
     }
 
     private var agentStatus: VibeAgentStatus {
@@ -87,9 +102,15 @@ extension VibeClaudeHookEvent {
 
     private var toolInputSummary: String? {
         guard let toolInput else { return nil }
-        return toolInput
-            .sorted { $0.key < $1.key }
-            .prefix(2)
+        let priority = ["file_path", "path", "old_string", "new_string", "command", "description"]
+        let ordered = toolInput.sorted { lhs, rhs in
+            let left = priority.firstIndex(of: lhs.key) ?? priority.count
+            let right = priority.firstIndex(of: rhs.key) ?? priority.count
+            if left == right { return lhs.key < rhs.key }
+            return left < right
+        }
+        return ordered
+            .prefix(4)
             .map { "\($0.key): \($0.value.description)" }
             .joined(separator: ", ")
     }

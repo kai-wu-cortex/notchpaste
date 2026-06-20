@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import SwiftUI
 
@@ -73,15 +74,25 @@ struct VibeIslandDashboard {
     )
 
     var notchActivity: VibeNotchActivity {
-        if sessions.contains(where: { $0.action == .approval || $0.action == .question }) {
+        if sessions.contains(where: { $0.action == .approval || $0.action == .question || $0.needsJumpAttention }) {
             return .needsInteraction
         }
 
-        if sessions.contains(where: { $0.action == .monitor }) {
+        if sessions.contains(where: { $0.isRunningMonitor }) {
             return .running
         }
 
         return .idle
+    }
+
+    func notchCodeDiff(preferredSessionID: UUID?) -> [VibeCodeDiffLine] {
+        if let preferredSessionID,
+           let preferred = sessions.first(where: { $0.id == preferredSessionID }),
+           !preferred.codeDiff.isEmpty {
+            return preferred.codeDiff
+        }
+
+        return sessions.first { !$0.codeDiff.isEmpty }?.codeDiff ?? []
     }
 }
 
@@ -108,6 +119,9 @@ struct VibeSession: Identifiable {
     let responseMode: VibeAgentResponseMode
     let claudeSessionID: String?
     let claudeToolUseID: String?
+    var codeDiff: [VibeCodeDiffLine]
+    var questionOptions: [String]
+    var history: [VibeSessionEvent]
 
     init(
         id: UUID = UUID(),
@@ -125,7 +139,10 @@ struct VibeSession: Identifiable {
         approvalID: String? = nil,
         responseMode: VibeAgentResponseMode = .none,
         claudeSessionID: String? = nil,
-        claudeToolUseID: String? = nil
+        claudeToolUseID: String? = nil,
+        codeDiff: [VibeCodeDiffLine] = [],
+        questionOptions: [String] = [],
+        history: [VibeSessionEvent] = []
     ) {
         self.id = id
         self.agent = agent
@@ -143,6 +160,9 @@ struct VibeSession: Identifiable {
         self.responseMode = responseMode
         self.claudeSessionID = claudeSessionID
         self.claudeToolUseID = claudeToolUseID
+        self.codeDiff = codeDiff
+        self.questionOptions = questionOptions
+        self.history = history
     }
 
     var primaryActionTitle: String {
@@ -157,6 +177,51 @@ struct VibeSession: Identifiable {
     var secondaryActionTitle: String? {
         action == .approval ? "Deny" : nil
     }
+
+    var needsJumpAttention: Bool {
+        guard action == .jump else { return false }
+        let terminalHandoffStates = ["Waiting for input", "需要终端确认"]
+        return terminalHandoffStates.contains(state)
+    }
+
+    var isRunningMonitor: Bool {
+        guard action == .monitor else { return false }
+        let inactiveStates = ["Completed", "Failed", "Ready", "Denied", "Approved"]
+        return !inactiveStates.contains(state)
+    }
+}
+
+struct VibeSessionEvent: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case userInput
+        case processing
+        case agentOutput
+        case permission
+        case system
+    }
+
+    let id: UUID
+    let kind: Kind
+    let title: String
+    let message: String
+    let codeDiff: [VibeCodeDiffLine]
+    let timestamp: Date
+
+    init(
+        id: UUID = UUID(),
+        kind: Kind,
+        title: String,
+        message: String,
+        codeDiff: [VibeCodeDiffLine] = [],
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.message = message
+        self.codeDiff = codeDiff
+        self.timestamp = timestamp
+    }
 }
 
 enum VibeSessionAction: String, Codable, Equatable {
@@ -164,6 +229,22 @@ enum VibeSessionAction: String, Codable, Equatable {
     case question
     case jump
     case monitor
+}
+
+struct VibeCodeDiffLine: Equatable {
+    enum Style: Equatable {
+        case context
+        case removed
+        case added
+    }
+
+    let text: String
+    let style: Style
+
+    init(_ text: String, style: Style) {
+        self.text = text
+        self.style = style
+    }
 }
 
 enum VibeNativeMode: CaseIterable, Equatable {
@@ -221,6 +302,9 @@ struct VibeNativeSessionRow: Identifiable {
     let isWaitingForApproval: Bool
     let primaryActionTitle: String
     let secondaryActionTitle: String?
+    let codeDiff: [VibeCodeDiffLine]
+    let questionOptions: [String]
+    let history: [VibeSessionEvent]
 
     init(session: VibeSession, usageLabel: String? = nil) {
         id = session.id
@@ -234,6 +318,9 @@ struct VibeNativeSessionRow: Identifiable {
         isWaitingForApproval = session.action == .approval
         primaryActionTitle = session.primaryActionTitle
         secondaryActionTitle = session.secondaryActionTitle
+        codeDiff = session.codeDiff
+        questionOptions = session.questionOptions
+        history = session.history
     }
 
     var showsInlineApproval: Bool {
@@ -252,22 +339,27 @@ final class VibeIslandDashboardModel: ObservableObject {
     private let eventStore: VibeIslandEventStore?
     private let agentStore: VibeAgentStore?
     private let terminalJumper: (VibeSession) -> Void
+    private let replySender: (VibeSession, String) -> Bool
     private var cancellables = Set<AnyCancellable>()
 
     init(
         dashboard: VibeIslandDashboard = .empty,
         eventStore: VibeIslandEventStore? = nil,
         agentStore: VibeAgentStore? = nil,
-        terminalJumper: @escaping (VibeSession) -> Void = VibeTerminalJumper.jump
+        terminalJumper: @escaping (VibeSession) -> Void = VibeTerminalJumper.jump,
+        replySender: @escaping (VibeSession, String) -> Bool = VibeTerminalReplySender.send
     ) {
         self.dashboard = dashboard
         self.eventStore = eventStore
         self.agentStore = agentStore
         self.terminalJumper = terminalJumper
+        self.replySender = replySender
 
         agentStore?.$dashboard
             .sink { [weak self] dashboard in
-                self?.dashboard = dashboard
+                guard let self else { return }
+                guard !dashboard.sessions.isEmpty || self.dashboard.sessions.isEmpty else { return }
+                self.dashboard = dashboard
             }
             .store(in: &cancellables)
 
@@ -336,6 +428,23 @@ final class VibeIslandDashboardModel: ObservableObject {
         selectedQuestionOption = option
         lastAction = "已回答 \(option)"
         writeResponse(sessionID: nil, action: .reply, value: option)
+    }
+
+    func submitReply(_ text: String, sessionID: UUID?) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, let index = sessionIndex(for: sessionID) else { return }
+
+        let session = dashboard.sessions[index]
+        dashboard.sessions[index].history.append(
+            VibeSessionEvent(kind: .userInput, title: "你的输入", message: value)
+        )
+        selectedSessionID = session.id
+        if replySender(session, value) {
+            lastAction = "已发送给 \(session.agent)"
+        } else {
+            lastAction = "已复制回复，请在 \(session.terminal) 回车发送"
+        }
+        writeResponse(sessionID: session.id, action: .reply, value: value)
     }
 
     func reviewPlan() {
@@ -412,10 +521,13 @@ final class VibeIslandDashboardModel: ObservableObject {
 
 private enum VibeTerminalJumper {
     static func jump(to session: VibeSession) {
-        guard let app = session.terminalProcessID.flatMap(runningApplicationInProcessTree(startingAt:))
-            ?? runningApplication(named: session.terminal)
-        else { return }
+        guard let app = app(for: session) else { return }
         app.activate(options: [])
+    }
+
+    static func app(for session: VibeSession) -> NSRunningApplication? {
+        session.terminalProcessID.flatMap(runningApplicationInProcessTree(startingAt:))
+            ?? runningApplication(named: session.terminal)
     }
 
     private static func runningApplication(named terminal: String) -> NSRunningApplication? {
@@ -488,9 +600,101 @@ private enum VibeTerminalJumper {
     }
 }
 
+enum VibeTerminalReplySender {
+    static func send(to session: VibeSession, value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        copyReplyToPasteboard(trimmed)
+
+        guard isAccessibilityTrusted(promptIfNeeded: true),
+              let app = VibeTerminalJumper.app(for: session)
+        else {
+            guard let app = VibeTerminalJumper.app(for: session) else { return false }
+            app.activate(options: [])
+            return sendWithAppleScript(to: app)
+        }
+
+        app.activate(options: [])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            postCommandV()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                postReturn()
+            }
+        }
+        return true
+    }
+
+    private static func sendWithAppleScript(to app: NSRunningApplication) -> Bool {
+        let target: String
+        if let bundleIdentifier = app.bundleIdentifier {
+            target = #"application id "\#(bundleIdentifier)""#
+        } else if let name = app.localizedName {
+            target = #"application "\#(name)""#
+        } else {
+            return false
+        }
+
+        let script = """
+        tell \(target) to activate
+        delay 0.2
+        tell application "System Events"
+            keystroke "v" using command down
+            delay 0.08
+            key code 36
+        end tell
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func copyReplyToPasteboard(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+    }
+
+    private static func isAccessibilityTrusted(promptIfNeeded: Bool) -> Bool {
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
+        let options: [CFString: Any] = [key: promptIfNeeded]
+        return AXIsProcessTrustedWithOptions(options as CFDictionary)
+    }
+
+    private static func postCommandV() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let key = CGKeyCode(kVK_ANSI_V)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+        down?.flags = .maskCommand
+        let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
+        up?.flags = .maskCommand
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    private static func postReturn() {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let key = CGKeyCode(kVK_Return)
+        CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)?.post(tap: .cghidEventTap)
+        CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)?.post(tap: .cghidEventTap)
+    }
+}
+
 struct VibeIslandReplicaView: View {
 
     @StateObject private var model: VibeIslandDashboardModel
+    @State private var replyDraft = ""
+    @FocusState private var replyFieldFocused: Bool
     private let onJump: () -> Void
 
     @MainActor
@@ -612,9 +816,19 @@ struct VibeIslandReplicaView: View {
                     nativeRow(row)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
         }
         .scrollBounceBehavior(.basedOnSize)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .padding(.horizontal, 10)
     }
 
     private func permissionRequestPage(_ row: VibeNativeSessionRow) -> some View {
@@ -685,10 +899,16 @@ struct VibeIslandReplicaView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .onAppear {
+            replyFieldFocused = true
+        }
+        .onChange(of: row.id) { _, _ in
+            replyFieldFocused = true
+        }
     }
 
     private func conversationDetail(_ row: VibeNativeSessionRow) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 iconButton("chevron.left") {
                     model.closeConversation()
@@ -724,30 +944,74 @@ struct VibeIslandReplicaView: View {
             }
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(row.state)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(row.isWaitingForApproval ? TerminalPalette.amber : row.tint)
 
-                    conversationBlock(title: "Latest event", value: row.detail.isEmpty ? row.state : row.detail, tint: row.tint)
-
-                    if row.isWaitingForApproval {
-                        permissionDiffBlock(row)
-                    }
+                    conversationHistoryBlock(row)
 
                     if !model.lastAction.isEmpty {
                         Text(model.lastAction)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.white.opacity(0.34))
-                            .padding(.top, 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
             }
+            .frame(maxHeight: .infinity)
+
+            replyComposer(row)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private func replyComposer(_ row: VibeNativeSessionRow) -> some View {
+        HStack(spacing: 8) {
+            TextField("回复 \(row.title)", text: $replyDraft)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .focused($replyFieldFocused)
+                .onSubmit {
+                    submitReply(for: row)
+                }
+
+            Button {
+                submitReply(for: row)
+            } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .white.opacity(0.26) : .black)
+                    .frame(width: 28, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white.opacity(0.06) : row.tint)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 6)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(row.tint.opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    private func submitReply(for row: VibeNativeSessionRow) {
+        let value = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        model.submitReply(value, sessionID: row.id)
+        replyDraft = ""
     }
 
     private func conversationBlock(title: String, value: String, tint: Color) -> some View {
@@ -767,6 +1031,63 @@ struct VibeIslandReplicaView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(tint.opacity(0.08))
         )
+    }
+
+    private func conversationHistoryBlock(_ row: VibeNativeSessionRow) -> some View {
+        let events = row.history.isEmpty
+            ? [VibeSessionEvent(kind: .system, title: "Latest event", message: row.detail.isEmpty ? row.state : row.detail)]
+            : row.history
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("历史记录")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(.white.opacity(0.36))
+
+            ForEach(events.suffix(12)) { event in
+                HStack(alignment: .top, spacing: 6) {
+                    Circle()
+                        .fill(historyColor(event.kind, tint: row.tint))
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 5)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        let diffLines = historyDiffLines(for: event)
+
+                        Text(event.title)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.42))
+
+                        Text(historyMessage(for: event, hasDiff: diffLines != nil))
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.84))
+                            .lineLimit(diffLines == nil ? 3 : 1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if let lines = diffLines {
+                            diffLinesBlock(lines)
+                                .padding(.top, 3)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(row.tint.opacity(0.08))
+        )
+    }
+
+    private func historyColor(_ kind: VibeSessionEvent.Kind, tint: Color) -> Color {
+        switch kind {
+        case .userInput: return .white.opacity(0.72)
+        case .processing: return tint
+        case .agentOutput: return .green
+        case .permission: return TerminalPalette.amber
+        case .system: return .white.opacity(0.36)
+        }
     }
 
     private func permissionRequestModal(_ row: VibeNativeSessionRow) -> some View {
@@ -831,21 +1152,146 @@ struct VibeIslandReplicaView: View {
     private func permissionDiffBlock(_ row: VibeNativeSessionRow) -> some View {
         let lines = permissionPreviewLines(for: row)
 
-        return VStack(alignment: .leading, spacing: 0) {
+        return diffLinesBlock(lines)
+    }
+
+    private func diffLinesBlock(_ lines: [PermissionPreviewLine]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(line.text)
                     .foregroundColor(line.color)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(line.background)
             }
         }
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .font(.system(size: 9, weight: .medium, design: .monospaced))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    private func historyDiffLines(for event: VibeSessionEvent) -> [PermissionPreviewLine]? {
+        if !event.codeDiff.isEmpty {
+            return event.codeDiff.map { permissionLine(from: $0) }
+        }
+
+        if let patchLines = patchPreviewLines(from: event.message), !patchLines.isEmpty {
+            return patchLines
+        }
+
+        guard event.kind == .permission || event.kind == .processing else { return nil }
+        let message = event.message
+        guard message.localizedCaseInsensitiveContains("edit")
+                || message.localizedCaseInsensitiveContains("old_string")
+                || message.localizedCaseInsensitiveContains("new_string")
+        else { return nil }
+
+        let oldValue = extractedToolValue(named: "old_string", from: message)
+        let newValue = extractedToolValue(named: "new_string", from: message)
+        let path = extractedToolValue(named: "file_path", from: message)
+            ?? extractedToolValue(named: "path", from: message)
+
+        var lines: [PermissionPreviewLine] = []
+        lines.append(
+            PermissionPreviewLine(
+                path.map { "Edit \($0)" } ?? event.title,
+                color: .white.opacity(0.28),
+                background: .white.opacity(0.04)
+            )
+        )
+
+        if let oldValue, !oldValue.isEmpty {
+            lines.append(
+                PermissionPreviewLine(
+                    "- \(singleLinePreview(oldValue))",
+                    color: Color(red: 1.0, green: 0.55, blue: 0.5),
+                    background: .red.opacity(0.14)
+                )
+            )
+        }
+
+        if let newValue, !newValue.isEmpty {
+            lines.append(
+                PermissionPreviewLine(
+                    "+ \(singleLinePreview(newValue))",
+                    color: TerminalPalette.green,
+                    background: TerminalPalette.green.opacity(0.10)
+                )
+            )
+        }
+
+        if lines.count == 1 {
+            lines.append(contentsOf: [
+                PermissionPreviewLine("13 - jwt.verify(token);", color: Color(red: 1.0, green: 0.55, blue: 0.5), background: .red.opacity(0.14)),
+                PermissionPreviewLine("13 + if (!token) throw new", color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10)),
+                PermissionPreviewLine("14 + AuthError('missing');", color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10))
+            ])
+        }
+
+        return lines
+    }
+
+    private func historyMessage(for event: VibeSessionEvent, hasDiff: Bool) -> String {
+        guard hasDiff else { return event.message }
+        if let commandRange = event.message.range(of: " command:") {
+            return String(event.message[..<commandRange.lowerBound]) + " command"
+        }
+        return event.title
+    }
+
+    private func patchPreviewLines(from message: String) -> [PermissionPreviewLine]? {
+        guard message.contains("*** Begin Patch") else { return nil }
+
+        let rawLines = message.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = rawLines.compactMap { rawLine -> PermissionPreviewLine? in
+            if rawLine.hasPrefix("*** Update File: ") || rawLine.hasPrefix("*** Add File: ") {
+                let file = rawLine
+                    .replacingOccurrences(of: "*** Update File: ", with: "")
+                    .replacingOccurrences(of: "*** Add File: ", with: "")
+                return PermissionPreviewLine("Edit \(file)", color: .white.opacity(0.24), background: .white.opacity(0.04))
+            }
+            if rawLine.hasPrefix("+") {
+                return PermissionPreviewLine(rawLine, color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10))
+            }
+            if rawLine.hasPrefix("-") {
+                return PermissionPreviewLine(rawLine, color: Color(red: 1.0, green: 0.55, blue: 0.5), background: .red.opacity(0.14))
+            }
+            if rawLine.hasPrefix(" ") {
+                return PermissionPreviewLine(rawLine, color: .white.opacity(0.24), background: .white.opacity(0.04))
+            }
+            return nil
+        }
+
+        guard !lines.isEmpty else { return nil }
+        return Array(lines.prefix(10))
+    }
+
+    private func extractedToolValue(named name: String, from text: String) -> String? {
+        guard let range = text.range(of: "\(name): ") else { return nil }
+        let start = range.upperBound
+        let remaining = text[start...]
+        let keys = ["file_path: ", "path: ", "old_string: ", "new_string: ", "command: ", "description: "]
+            .filter { !$0.hasPrefix("\(name):") }
+        let end = keys.compactMap { remaining.range(of: ", \($0)")?.lowerBound }.min() ?? text.endIndex
+        let value = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func singleLinePreview(_ value: String) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > 88 else { return normalized }
+        return "\(normalized.prefix(85))..."
+    }
+
     private func permissionPreviewLines(for row: VibeNativeSessionRow) -> [PermissionPreviewLine] {
+        if !row.codeDiff.isEmpty {
+            return row.codeDiff.map { permissionLine(from: $0) }
+        }
+
         if row.detail.localizedCaseInsensitiveContains("edit ") {
             return [
                 PermissionPreviewLine("12 const verify = (token) =>", color: .white.opacity(0.24), background: .white.opacity(0.04)),
@@ -860,6 +1306,17 @@ struct VibeIslandReplicaView: View {
             PermissionPreviewLine(row.detail.isEmpty ? row.projectTitle : row.detail, color: .white.opacity(0.82), background: Color.white.opacity(0.03)),
             PermissionPreviewLine("Waiting for approval", color: TerminalPalette.amber, background: TerminalPalette.amber.opacity(0.10))
         ]
+    }
+
+    private func permissionLine(from diffLine: VibeCodeDiffLine) -> PermissionPreviewLine {
+        switch diffLine.style {
+        case .context:
+            return PermissionPreviewLine(diffLine.text, color: .white.opacity(0.24), background: .white.opacity(0.04))
+        case .removed:
+            return PermissionPreviewLine(diffLine.text, color: Color(red: 1.0, green: 0.55, blue: 0.5), background: .red.opacity(0.14))
+        case .added:
+            return PermissionPreviewLine(diffLine.text, color: TerminalPalette.green, background: TerminalPalette.green.opacity(0.10))
+        }
     }
 
     private func permissionTitle(for row: VibeNativeSessionRow) -> String {

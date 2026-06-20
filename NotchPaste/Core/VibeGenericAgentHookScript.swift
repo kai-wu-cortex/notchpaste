@@ -28,6 +28,8 @@ enum VibeGenericAgentHookScript {
                 return "running_tool"
             if event in ("PermissionRequest", "ApprovalRequest"):
                 return "waiting_for_approval"
+            if event in ("AskUserQuestion", "UserQuestion", "Question"):
+                return "waiting_for_input"
             if event in ("Stop", "SessionEnd"):
                 return "ended"
             if event in ("Notification",):
@@ -49,6 +51,21 @@ enum VibeGenericAgentHookScript {
                 if name in data and data.get(name) is not None:
                     return data.get(name)
             return default
+
+        def string_list(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                result = []
+                for item in value:
+                    if isinstance(item, dict):
+                        label = first_value(item, ["label", "title", "text", "value", "name"])
+                        if label is not None:
+                            result.append(str(label))
+                    else:
+                        result.append(str(item))
+                return result
+            return [str(value)]
 
         def usage_label(data):
             usage = first_value(data, ["usage", "token_usage", "tokenUsage"])
@@ -89,7 +106,8 @@ enum VibeGenericAgentHookScript {
                 "tool_input": first_value(data, ["tool_input", "toolInput", "args"], {}),
                 "tool_use_id": first_value(data, ["tool_use_id", "toolUseId", "call_id"]),
                 "usage_label": usage_label(data),
-                "message": first_value(data, ["message", "prompt", "text"]),
+                "message": first_value(data, ["message", "prompt", "text", "output", "response", "content", "assistant_message", "assistantMessage"]),
+                "question_options": string_list(first_value(data, ["question_options", "questionOptions", "options", "choices", "answers"])),
             }
             send_event(state)
 

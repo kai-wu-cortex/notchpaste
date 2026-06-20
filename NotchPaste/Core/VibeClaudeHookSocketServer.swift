@@ -148,7 +148,9 @@ final class VibeClaudeHookSocketServer {
                 toolInput: event.toolInput,
                 toolUseId: toolUseId,
                 notificationType: event.notificationType,
-                message: event.message
+                message: event.message,
+                questionOptions: event.questionOptions,
+                agent: event.agent
             )
             lock.lock()
             pendingPermissions[toolUseId] = PendingPermission(toolUseId: toolUseId, clientSocket: clientSocket, receivedAt: Date())

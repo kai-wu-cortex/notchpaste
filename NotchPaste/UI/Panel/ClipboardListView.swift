@@ -3,6 +3,7 @@ import Combine
 
 /// 剪贴板列表视图：左侧分类 + 右侧搜索框 + 行列表。供 NotchView 在打开态嵌入。
 struct ClipboardListView: View {
+    static let autofocusesSearchOnAppear = false
 
     @ObservedObject var viewModel: PanelViewModel
     @FocusState private var searchFocused: Bool
@@ -29,13 +30,13 @@ struct ClipboardListView: View {
                                 ItemRowView(
                                     item: item,
                                     isSelected: idx == viewModel.selectedIndex,
+                                    onActivate: {
+                                        viewModel.selectedIndex = idx
+                                        viewModel.commitSelection()
+                                    },
                                     onToggleStar: { viewModel.toggleStar(item) }
                                 )
                                 .id(item.id)
-                                .onTapGesture {
-                                    viewModel.selectedIndex = idx
-                                    viewModel.commitSelection()
-                                }
                             }
                             if viewModel.filteredItems.isEmpty {
                                 emptyState
@@ -53,10 +54,13 @@ struct ClipboardListView: View {
             }
         }
         .onAppear {
-            viewModel.refresh()
-            // 由快捷键打开 → 自动聚焦搜索框
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                searchFocused = true
+            if viewModel.items.isEmpty {
+                viewModel.refreshAsync()
+            }
+            if Self.autofocusesSearchOnAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                    searchFocused = true
+                }
             }
         }
     }

@@ -12,6 +12,7 @@ struct VibeCodexHookEvent: Codable, Equatable, Sendable {
     let toolUseId: String?
     let usageLabel: String?
     let message: String?
+    let questionOptions: [String]?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -25,6 +26,7 @@ struct VibeCodexHookEvent: Codable, Equatable, Sendable {
         case toolUseId = "tool_use_id"
         case usageLabel = "usage_label"
         case message
+        case questionOptions = "question_options"
     }
 }
 
@@ -41,7 +43,10 @@ extension VibeCodexHookEvent {
             toolName: tool,
             toolInputSummary: toolInputSummary,
             approvalID: toolUseId,
+            question: message,
+            questionOptions: questionOptions ?? [],
             usageLabel: usageLabel,
+            codeDiff: VibeAgentCodeDiffBuilder.lines(toolName: tool, toolInput: toolInput),
             responseMode: agentStatus == .waitingForApproval ? .terminalHandoff : .none,
             createdAt: Date()
         )
@@ -67,9 +72,15 @@ extension VibeCodexHookEvent {
 
     private var toolInputSummary: String? {
         guard let toolInput else { return nil }
-        return toolInput
-            .sorted { $0.key < $1.key }
-            .prefix(2)
+        let priority = ["file_path", "path", "old_string", "new_string", "command", "description"]
+        let ordered = toolInput.sorted { lhs, rhs in
+            let left = priority.firstIndex(of: lhs.key) ?? priority.count
+            let right = priority.firstIndex(of: rhs.key) ?? priority.count
+            if left == right { return lhs.key < rhs.key }
+            return left < right
+        }
+        return ordered
+            .prefix(4)
             .map { "\($0.key): \($0.value.description)" }
             .joined(separator: ", ")
     }

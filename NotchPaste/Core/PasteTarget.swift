@@ -25,6 +25,18 @@ struct PasteTarget {
         return PasteTarget(app: frontmost, restoreFocusedElement: restorer)
     }
 
+    static func captureApplicationOnly(excluding bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> PasteTarget? {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.bundleIdentifier != bundleIdentifier else { return nil }
+
+        return PasteTarget(app: frontmost)
+    }
+
+    static func captureFocusedElementTarget(app: NSRunningApplication) -> PasteTarget {
+        let restorer = focusedElementRestorer() ?? {}
+        return PasteTarget(app: app, restoreFocusedElement: restorer)
+    }
+
     func restoreFocus() {
         restoreFocusedElement()
     }

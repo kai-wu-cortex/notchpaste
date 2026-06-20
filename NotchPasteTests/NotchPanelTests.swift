@@ -5,6 +5,21 @@ import Testing
 @Suite("NotchPanel")
 struct NotchPanelTests {
 
+    @Test("opened notch presentation does not steal foreground focus")
+    func openedNotchPresentationDoesNotStealForegroundFocus() {
+        let presentation = NotchPanelPresentationPolicy.presentation(for: .opened)
+
+        #expect(presentation.allowsMouseEvents)
+        #expect(presentation.ordersFront)
+        #expect(!presentation.activatesApplication)
+        #expect(!presentation.makesKeyWindow)
+    }
+
+    @Test("clipboard list does not autofocus search on appear")
+    func clipboardListDoesNotAutofocusSearchOnAppear() {
+        #expect(!ClipboardListView.autofocusesSearchOnAppear)
+    }
+
     @MainActor
     @Test("prepareForBackgroundPaste clears focused control")
     func prepareForBackgroundPasteClearsFocusedControl() {

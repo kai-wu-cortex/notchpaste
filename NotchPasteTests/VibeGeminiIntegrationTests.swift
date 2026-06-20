@@ -47,7 +47,8 @@ struct VibeGeminiIntegrationTests {
             toolInput: ["command": AnyCodable("pnpm lint")],
             toolUseId: nil,
             usageLabel: nil,
-            message: nil
+            message: nil,
+            questionOptions: nil
         )
 
         let store = VibeAgentStore()

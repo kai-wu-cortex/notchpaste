@@ -42,7 +42,9 @@ struct VibeClaudeIntegrationTests {
             toolInput: ["file_path": AnyCodable("/Users/kyle/project/auth-api/src/auth/middleware.ts")],
             toolUseId: "tool-1",
             notificationType: nil,
-            message: nil
+            message: nil,
+            questionOptions: nil,
+            agent: nil
         )
 
         store.process(event.agentEvent)
@@ -75,7 +77,9 @@ struct VibeClaudeIntegrationTests {
             toolInput: ["command": AnyCodable("npm test")],
             toolUseId: "tool-1",
             notificationType: nil,
-            message: nil
+            message: nil,
+            questionOptions: nil,
+            agent: nil
         )
 
         store.process(event.agentEvent(resolvedAgent: .codex))
@@ -84,6 +88,34 @@ struct VibeClaudeIntegrationTests {
         #expect(session?.agent == "Codex")
         #expect(session?.action == .jump)
         #expect(session?.responseMode == .terminalHandoff)
+    }
+
+    @Test("Claude socket event declared as Codex stays Codex")
+    @MainActor
+    func claudeSocketEventDeclaredAsCodexStaysCodex() {
+        let store = VibeAgentStore()
+        let event = VibeClaudeHookEvent(
+            sessionId: "codex-session",
+            cwd: "/Users/kyle/codex project/pasteboard",
+            event: "SessionStart",
+            status: "waiting_for_input",
+            pid: nil,
+            tty: "/dev/ttys002",
+            tool: nil,
+            toolInput: nil,
+            toolUseId: nil,
+            notificationType: nil,
+            message: nil,
+            questionOptions: nil,
+            agent: "codex"
+        )
+
+        store.process(event.agentEvent)
+
+        let session = store.dashboard.sessions.first
+        #expect(session?.agent == "Codex")
+        #expect(session?.terminal == "ttys002")
+        #expect(session?.agentKind == .codex)
     }
 
     private func temporaryDirectory() throws -> URL {

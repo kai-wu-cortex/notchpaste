@@ -2,6 +2,34 @@ import AppKit
 import Combine
 import SwiftUI
 
+struct NotchPanelPresentationPolicy {
+    struct Presentation: Equatable {
+        let allowsMouseEvents: Bool
+        let ordersFront: Bool
+        let activatesApplication: Bool
+        let makesKeyWindow: Bool
+    }
+
+    static func presentation(for status: NotchViewModel.NotchStatus) -> Presentation {
+        switch status {
+        case .opened:
+            return Presentation(
+                allowsMouseEvents: true,
+                ordersFront: true,
+                activatesApplication: false,
+                makesKeyWindow: false
+            )
+        case .closed:
+            return Presentation(
+                allowsMouseEvents: false,
+                ordersFront: false,
+                activatesApplication: false,
+                makesKeyWindow: false
+            )
+        }
+    }
+}
+
 /// 管理 NotchPanel 的生命周期 + 在 status 变化时切换 ignoresMouseEvents。
 /// 复刻自 farouqaldori/vibe-notch (Apache 2.0)。
 final class NotchWindowController: NSWindowController {
@@ -9,6 +37,7 @@ final class NotchWindowController: NSWindowController {
     let viewModel: NotchViewModel
     let panelVM: PanelViewModel
     private var cancellables = Set<AnyCancellable>()
+    private var deferredActivationWork: DispatchWorkItem?
 
     init(
         screen: NSScreen,
@@ -63,12 +92,29 @@ final class NotchWindowController: NSWindowController {
         // status 切换 → ignoresMouseEvents 切换
         viewModel.$status
             .receive(on: DispatchQueue.main)
-            .sink { [weak panel] status in
+            .sink { [weak self, weak panel] status in
+                self?.deferredActivationWork?.cancel()
+                self?.deferredActivationWork = nil
+
                 switch status {
                 case .opened:
-                    panel?.ignoresMouseEvents = false
-                    NSApp.activate(ignoringOtherApps: false)
-                    panel?.makeKey()
+                    let presentation = NotchPanelPresentationPolicy.presentation(for: status)
+                    let work = DispatchWorkItem { [weak panel] in
+                        guard let panel else { return }
+                        panel.ignoresMouseEvents = !presentation.allowsMouseEvents
+
+                        guard presentation.ordersFront else { return }
+                        if presentation.activatesApplication {
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
+                        if presentation.makesKeyWindow {
+                            panel.makeKeyAndOrderFront(nil)
+                        } else {
+                            panel.orderFrontRegardless()
+                        }
+                    }
+                    self?.deferredActivationWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
                 case .closed:
                     panel?.prepareForBackgroundPaste()
                 }

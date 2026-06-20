@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NotchPaste
 
@@ -47,8 +48,131 @@ struct VibeIslandDashboardTests {
 
         var runningDashboard = VibeIslandDashboard.demo
         runningDashboard.sessions.removeAll { $0.action == .approval }
+        runningDashboard.sessions.removeAll { $0.action == .jump }
 
         #expect(runningDashboard.notchActivity == .running)
+
+        let jumpSession = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "pasteboard",
+            detail: "需要在终端确认",
+            elapsed: "live",
+            state: "需要终端确认",
+            action: .jump,
+            tint: .cyan
+        )
+        let jumpDashboard = VibeIslandDashboard(
+            supportedAgentCount: 1,
+            supportedTerminalCount: 1,
+            sessions: [jumpSession],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex"]
+        )
+
+        #expect(jumpDashboard.notchActivity == .needsInteraction)
+
+        let completedDashboard = VibeIslandDashboard(
+            supportedAgentCount: 1,
+            supportedTerminalCount: 1,
+            sessions: [
+                VibeSession(
+                    agent: "Codex",
+                    terminal: "Terminal",
+                    title: "pasteboard",
+                    detail: "Stop",
+                    elapsed: "live",
+                    state: "Completed",
+                    action: .jump,
+                    tint: .cyan
+                )
+            ],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex"]
+        )
+
+        #expect(completedDashboard.notchActivity == .idle)
+    }
+
+    @Test("notch diff prefers pending session and falls back to latest diff")
+    func notchDiffPrefersPendingSessionAndFallsBackToLatestDiff() {
+        let fallbackDiff = [VibeCodeDiffLine("+ fallback", style: .added)]
+        let approvalDiff = [VibeCodeDiffLine("- approval", style: .removed)]
+        let approval = VibeSession(
+            agent: "Claude",
+            terminal: "iTerm",
+            title: "auth",
+            detail: "Edit auth.ts",
+            elapsed: "live",
+            state: "Permission Request",
+            action: .approval,
+            tint: .orange,
+            codeDiff: approvalDiff
+        )
+        let latest = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "api",
+            detail: "Edit api.ts",
+            elapsed: "live",
+            state: "Running Tool",
+            action: .monitor,
+            tint: .cyan,
+            codeDiff: fallbackDiff
+        )
+        let dashboard = VibeIslandDashboard(
+            supportedAgentCount: 2,
+            supportedTerminalCount: 2,
+            sessions: [latest, approval],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex", "Claude"]
+        )
+
+        #expect(dashboard.notchCodeDiff(preferredSessionID: approval.id) == approvalDiff)
+        #expect(dashboard.notchCodeDiff(preferredSessionID: UUID()) == fallbackDiff)
+    }
+
+    @Test("notch diff falls back when approval has no diff")
+    func notchDiffFallsBackWhenApprovalHasNoDiff() {
+        let fallbackDiff = [VibeCodeDiffLine("+ latest", style: .added)]
+        let approval = VibeSession(
+            agent: "Claude",
+            terminal: "iTerm",
+            title: "auth",
+            detail: "Approval without diff",
+            elapsed: "live",
+            state: "Permission Request",
+            action: .approval,
+            tint: .orange
+        )
+        let latest = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "api",
+            detail: "Edit api.ts",
+            elapsed: "live",
+            state: "Running Tool",
+            action: .monitor,
+            tint: .cyan,
+            codeDiff: fallbackDiff
+        )
+        let dashboard = VibeIslandDashboard(
+            supportedAgentCount: 2,
+            supportedTerminalCount: 2,
+            sessions: [latest, approval],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex", "Claude"]
+        )
+
+        #expect(dashboard.notchCodeDiff(preferredSessionID: approval.id) == fallbackDiff)
     }
 
     @Test("open selects conversation detail")
@@ -97,6 +221,36 @@ struct VibeIslandDashboardTests {
         #expect(model.visibleRows.allSatisfy { $0.primaryActionTitle == "Jump" })
     }
 
+    @Test("ask user question session exposes inline reply options")
+    @MainActor
+    func askUserQuestionSessionExposesInlineReplyOptions() {
+        let question = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "pasteboard",
+            detail: "Which deployment target?",
+            elapsed: "live",
+            state: "Waiting for input",
+            action: .question,
+            tint: .cyan,
+            questionOptions: ["Production", "Staging", "Local only"]
+        )
+        let model = VibeIslandDashboardModel(dashboard: VibeIslandDashboard(
+            supportedAgentCount: 1,
+            supportedTerminalCount: 1,
+            sessions: [question],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex"]
+        ))
+
+        model.mode = .questions
+
+        #expect(model.visibleRows.first?.primaryActionTitle == "Reply")
+        #expect(model.visibleRows.first?.questionOptions == ["Production", "Staging", "Local only"])
+    }
+
     @Test("completed session jumps back to its terminal")
     func completedSessionJumpsBackToItsTerminal() {
         let completed = VibeIslandDashboard.demo.sessions.first { $0.action == .jump }
@@ -139,6 +293,43 @@ struct VibeIslandDashboardTests {
 
         #expect(model.lastAction == "已回答 Production")
         #expect(model.selectedQuestionOption == "Production")
+    }
+
+    @Test("submit reply records user input on selected session")
+    @MainActor
+    func submitReplyRecordsUserInputOnSelectedSession() {
+        var sentReply: (agent: String, value: String)?
+        let model = VibeIslandDashboardModel(
+            dashboard: .demo,
+            replySender: { session, value in
+                sentReply = (session.agent, value)
+                return true
+            }
+        )
+        let session = model.dashboard.sessions.first { $0.agent == "Codex" }
+
+        model.submitReply("继续检查失败原因", sessionID: session?.id)
+
+        let updated = model.dashboard.sessions.first { $0.id == session?.id }
+        #expect(updated?.history.last?.kind == .userInput)
+        #expect(updated?.history.last?.message == "继续检查失败原因")
+        #expect(model.lastAction == "已发送给 Codex")
+        #expect(sentReply?.agent == "Codex")
+        #expect(sentReply?.value == "继续检查失败原因")
+    }
+
+    @Test("submit reply reports terminal handoff when sender cannot inject")
+    @MainActor
+    func submitReplyReportsTerminalHandoffWhenSenderCannotInject() {
+        let model = VibeIslandDashboardModel(
+            dashboard: .demo,
+            replySender: { _, _ in false }
+        )
+        let session = model.dashboard.sessions.first { $0.agent == "Codex" }
+
+        model.submitReply("继续检查失败原因", sessionID: session?.id)
+
+        #expect(model.lastAction == "已复制回复，请在 Terminal 回车发送")
     }
 
     @Test("jump exposes local feedback")

@@ -6,17 +6,20 @@ import Combine
 @MainActor
 final class PanelViewModel: ObservableObject {
 
-    @Published var items: [ClipboardItem] = []
-    @Published var searchTerm: String = ""
+    @Published var items: [ClipboardItem] = [] {
+        didSet { updateFilteredItems() }
+    }
+    @Published var filteredItems: [ClipboardItem] = []
+    @Published var searchTerm: String = "" {
+        didSet { updateFilteredItems() }
+    }
     @Published var selectedIndex: Int = 0
     /// 当前分类。改变时会重置选中索引。
     @Published var category: ClipboardStore.Category = .all {
-        didSet { selectedIndex = 0 }
-    }
-
-    /// 经分类 + 搜索过滤后的展示列表。
-    var filteredItems: [ClipboardItem] {
-        (try? store.query(category: category, search: searchTerm)) ?? []
+        didSet {
+            selectedIndex = 0
+            updateFilteredItems()
+        }
     }
 
     private let store: ClipboardStore
@@ -40,8 +43,8 @@ final class PanelViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] new in
                 self?.items = new
-                if (self?.selectedIndex ?? 0) >= new.count {
-                    self?.selectedIndex = max(0, new.count - 1)
+                if let self, self.selectedIndex >= self.filteredItems.count {
+                    self.selectedIndex = max(0, self.filteredItems.count - 1)
                 }
             }
             .store(in: &cancellables)
@@ -50,6 +53,17 @@ final class PanelViewModel: ObservableObject {
     func refresh() {
         items = (try? store.allItems()) ?? []
         selectedIndex = 0
+    }
+
+    func refreshAsync() {
+        let store = store
+        DispatchQueue.global(qos: .userInitiated).async {
+            let refreshed = (try? store.allItems()) ?? []
+            DispatchQueue.main.async { [weak self] in
+                self?.items = refreshed
+                self?.selectedIndex = 0
+            }
+        }
     }
 
     func selectionUp() {
@@ -95,6 +109,13 @@ final class PanelViewModel: ObservableObject {
     /// 切换星标 = togglePin。pinned 项纳入"常用"分类。
     func toggleStar(_ item: ClipboardItem) {
         try? store.togglePin(id: item.id)
+    }
+
+    private func updateFilteredItems() {
+        filteredItems = ClipboardStore.filter(items, category: category, search: searchTerm)
+        if selectedIndex >= filteredItems.count {
+            selectedIndex = max(0, filteredItems.count - 1)
+        }
     }
 }
 

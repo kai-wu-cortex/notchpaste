@@ -132,6 +132,7 @@ struct VibeAgentEvent: Equatable {
     let questionOptions: [String]
     let planMarkdown: String?
     let usageLabel: String?
+    let codeDiff: [VibeCodeDiffLine]
     let responseMode: VibeAgentResponseMode
     let createdAt: Date
 
@@ -150,6 +151,7 @@ struct VibeAgentEvent: Equatable {
         questionOptions: [String] = [],
         planMarkdown: String? = nil,
         usageLabel: String? = nil,
+        codeDiff: [VibeCodeDiffLine] = [],
         responseMode: VibeAgentResponseMode = .none,
         createdAt: Date = Date()
     ) {
@@ -167,8 +169,90 @@ struct VibeAgentEvent: Equatable {
         self.questionOptions = questionOptions
         self.planMarkdown = planMarkdown
         self.usageLabel = usageLabel
+        self.codeDiff = codeDiff
         self.responseMode = responseMode
         self.createdAt = createdAt
+    }
+}
+
+enum VibeAgentCodeDiffBuilder {
+    static func lines(toolName: String?, toolInput: [String: AnyCodable]?) -> [VibeCodeDiffLine] {
+        guard let toolInput else { return [] }
+        let lowerTool = toolName?.lowercased() ?? ""
+        let command = value(for: ["command"], in: toolInput)
+
+        if let patchLines = patchLines(from: command), !patchLines.isEmpty {
+            return patchLines
+        }
+
+        guard lowerTool.contains("edit")
+                || lowerTool.contains("write")
+                || lowerTool.contains("apply_patch")
+                || toolInput["old_string"] != nil
+                || toolInput["new_string"] != nil
+                || command?.contains("*** Begin Patch") == true
+        else { return [] }
+
+        let path = value(for: ["file_path", "path", "relative_path"], in: toolInput)
+        let oldValue = value(for: ["old_string", "old", "before"], in: toolInput)
+        let newValue = value(for: ["new_string", "new", "after", "content"], in: toolInput)
+
+        var lines: [VibeCodeDiffLine] = []
+        if let path, !path.isEmpty {
+            lines.append(VibeCodeDiffLine("Edit \(path)", style: .context))
+        }
+
+        if let oldValue, !oldValue.isEmpty {
+            lines.append(contentsOf: formattedLines(oldValue, prefix: "-", style: .removed))
+        }
+
+        if let newValue, !newValue.isEmpty {
+            lines.append(contentsOf: formattedLines(newValue, prefix: "+", style: .added))
+        }
+
+        return lines
+    }
+
+    private static func patchLines(from command: String?) -> [VibeCodeDiffLine]? {
+        guard let command, command.contains("*** Begin Patch") else { return nil }
+
+        var result: [VibeCodeDiffLine] = []
+        for rawLine in command.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if rawLine.hasPrefix("*** Update File: ") || rawLine.hasPrefix("*** Add File: ") {
+                let file = rawLine
+                    .replacingOccurrences(of: "*** Update File: ", with: "")
+                    .replacingOccurrences(of: "*** Add File: ", with: "")
+                result.append(VibeCodeDiffLine("Edit \(file)", style: .context))
+            } else if rawLine.hasPrefix("+") {
+                result.append(VibeCodeDiffLine(rawLine, style: .added))
+            } else if rawLine.hasPrefix("-") {
+                result.append(VibeCodeDiffLine(rawLine, style: .removed))
+            } else if rawLine.hasPrefix(" ") {
+                result.append(VibeCodeDiffLine(rawLine, style: .context))
+            }
+        }
+
+        return result.isEmpty ? nil : Array(result.prefix(24))
+    }
+
+    private static func value(for keys: [String], in toolInput: [String: AnyCodable]) -> String? {
+        keys.compactMap { toolInput[$0]?.description }.first {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private static func formattedLines(_ value: String, prefix: String, style: VibeCodeDiffLine.Style) -> [VibeCodeDiffLine] {
+        let rawLines = value
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        let visibleLines = Array(rawLines.prefix(6))
+        var result = visibleLines.map { line in
+            VibeCodeDiffLine("\(prefix) \(line)", style: style)
+        }
+        if rawLines.count > visibleLines.count {
+            result.append(VibeCodeDiffLine("\(prefix) ...", style: style))
+        }
+        return result
     }
 }
 
@@ -187,6 +271,9 @@ struct VibeAgentSessionState: Equatable {
     var approvalID: String?
     var responseMode: VibeAgentResponseMode
     var usageLabel: String?
+    var codeDiff: [VibeCodeDiffLine]
+    var questionOptions: [String]
+    var history: [VibeSessionEvent]
     var lastActivity: Date
 
     init(event: VibeAgentEvent) {
@@ -204,6 +291,9 @@ struct VibeAgentSessionState: Equatable {
         approvalID = event.approvalID
         responseMode = event.responseMode
         usageLabel = event.usageLabel
+        codeDiff = event.codeDiff
+        questionOptions = event.questionOptions
+        history = [Self.historyEvent(for: event)]
         lastActivity = event.createdAt
     }
 
@@ -223,6 +313,13 @@ struct VibeAgentSessionState: Equatable {
         if let usageLabel = event.usageLabel {
             self.usageLabel = usageLabel
         }
+        if !event.codeDiff.isEmpty {
+            codeDiff = event.codeDiff
+        }
+        if !event.questionOptions.isEmpty {
+            questionOptions = event.questionOptions
+        }
+        appendHistory(event)
         lastActivity = event.createdAt
     }
 
@@ -241,7 +338,10 @@ struct VibeAgentSessionState: Equatable {
             agentKind: agent,
             agentSessionID: sessionID,
             approvalID: approvalID,
-            responseMode: responseMode
+            responseMode: responseMode,
+            codeDiff: codeDiff,
+            questionOptions: questionOptions,
+            history: history
         )
     }
 
@@ -249,8 +349,12 @@ struct VibeAgentSessionState: Equatable {
         switch status {
         case .waitingForApproval:
             return responseMode == .socket ? .approval : .jump
-        case .completed, .waitingForInput:
+        case .waitingForInput where !questionOptions.isEmpty:
+            return .question
+        case .waitingForInput:
             return .jump
+        case .completed, .failed:
+            return .monitor
         default:
             return .monitor
         }
@@ -265,15 +369,105 @@ struct VibeAgentSessionState: Equatable {
         }
         return event.question ?? event.planMarkdown ?? event.event
     }
+
+    private mutating func appendHistory(_ event: VibeAgentEvent) {
+        let item = Self.historyEvent(for: event)
+        guard history.last?.message != item.message || history.last?.title != item.title else { return }
+        history.append(item)
+        if history.count > 40 {
+            history.removeFirst(history.count - 40)
+        }
+    }
+
+    private static func historyEvent(for event: VibeAgentEvent) -> VibeSessionEvent {
+        let detail = detail(for: event)
+        let kind: VibeSessionEvent.Kind
+        let title: String
+
+        switch event.event {
+        case "UserPromptSubmit", "PromptSubmitted":
+            kind = .userInput
+            title = "你的输入"
+        case "Notification", "Stop", "SessionEnd":
+            kind = .agentOutput
+            title = "Agent 输出"
+        case "PermissionRequest", "ApprovalRequest":
+            kind = .permission
+            title = "权限请求"
+        case "PreToolUse", "PostToolUse", "BeforeTool", "AfterTool":
+            kind = .processing
+            title = "处理记录"
+        default:
+            kind = event.status == .waitingForInput || event.status == .completed ? .agentOutput : .system
+            title = event.status == .processing || event.status == .runningTool ? "处理记录" : "事件"
+        }
+
+        return VibeSessionEvent(
+            kind: kind,
+            title: title,
+            message: detail.isEmpty ? event.status.stateLabel : detail,
+            codeDiff: event.codeDiff,
+            timestamp: event.createdAt
+        )
+    }
+}
+
+final class VibeDashboardSnapshotWriter {
+    private let store: VibeIslandDashboardSnapshotStore?
+    private let delay: TimeInterval
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var pendingWork: DispatchWorkItem?
+
+    init(
+        store: VibeIslandDashboardSnapshotStore?,
+        delay: TimeInterval = 0.25,
+        queue: DispatchQueue = DispatchQueue(label: "com.notchpaste.vibe.snapshot", qos: .utility)
+    ) {
+        self.store = store
+        self.delay = delay
+        self.queue = queue
+    }
+
+    deinit {
+        lock.lock()
+        pendingWork?.cancel()
+        lock.unlock()
+    }
+
+    func schedule(_ dashboard: VibeIslandDashboard) {
+        guard let store else { return }
+
+        if delay <= 0 {
+            try? store.save(dashboard)
+            return
+        }
+
+        let work = DispatchWorkItem { [weak store] in
+            try? store?.save(dashboard)
+        }
+
+        lock.lock()
+        pendingWork?.cancel()
+        pendingWork = work
+        lock.unlock()
+
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 }
 
 @MainActor
 final class VibeAgentStore: ObservableObject {
-    static let shared = VibeAgentStore()
+    static let shared = VibeAgentStore(snapshotStore: VibeIslandEventStore.defaultStore())
 
     @Published private(set) var dashboard: VibeIslandDashboard = .empty
     @Published private(set) var lastAction = "等待 Agent 事件"
     private var sessions: [String: VibeAgentSessionState] = [:]
+    private let snapshotWriter: VibeDashboardSnapshotWriter
+
+    init(snapshotStore: VibeIslandDashboardSnapshotStore? = nil, snapshotSaveDelay: TimeInterval = 0.25) {
+        snapshotWriter = VibeDashboardSnapshotWriter(store: snapshotStore, delay: snapshotSaveDelay)
+    }
 
     func process(_ event: VibeAgentEvent) {
         removeStaleMismatchedSessions(for: event)
@@ -342,6 +536,21 @@ final class VibeAgentStore: ObservableObject {
         rebuildDashboard()
     }
 
+    func answerQuestion(sessionID: UUID?, option: String, deliveredToTerminal: Bool) {
+        guard let key = key(for: sessionID), var session = sessions[key] else { return }
+        session.status = .waitingForInput
+        session.stateOverride = "已回答"
+        session.detail = "Answered \(option)"
+        session.history.append(
+            VibeSessionEvent(kind: .userInput, title: "你的输入", message: option)
+        )
+        sessions[key] = session
+        lastAction = deliveredToTerminal
+            ? "\(session.agent.displayName) 已回答 \(option)"
+            : "已复制 \(option)，请在 \(session.terminal) 回车发送"
+        rebuildDashboard()
+    }
+
     private func key(for id: UUID?) -> String? {
         guard let id else { return nil }
         return sessions.first { $0.value.id == id }?.key
@@ -351,7 +560,7 @@ final class VibeAgentStore: ObservableObject {
         let ordered = sessions.values.sorted { $0.lastActivity > $1.lastActivity }
         let terminals = Set(ordered.map(\.terminal).filter { !$0.isEmpty })
 
-        dashboard = VibeIslandDashboard(
+        let nextDashboard = VibeIslandDashboard(
             supportedAgentCount: VibeAgentKind.allCases.count,
             supportedTerminalCount: max(terminals.count, 1),
             sessions: ordered.map(\.vibeSession),
@@ -360,6 +569,8 @@ final class VibeAgentStore: ObservableObject {
             usageMeters: usageMeters(from: ordered),
             supportedAgents: VibeAgentKind.allCases.map(\.displayName)
         )
+        dashboard = nextDashboard
+        snapshotWriter.schedule(nextDashboard)
     }
 
     private func usageMeters(from ordered: [VibeAgentSessionState]) -> [VibeUsageMeter] {

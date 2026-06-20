@@ -29,6 +29,10 @@ enum VibeIslandAgentResponseAction: String, Codable, Equatable {
     case jump
 }
 
+protocol VibeIslandDashboardSnapshotStore: AnyObject {
+    func save(_ dashboard: VibeIslandDashboard) throws
+}
+
 final class VibeIslandEventStore {
     private let directory: URL
     private let fileManager: FileManager
@@ -76,6 +80,10 @@ final class VibeIslandEventStore {
         try ensureDirectory()
         let data = try encoder.encode(events)
         try data.write(to: sessionsURL, options: .atomic)
+    }
+
+    func save(_ dashboard: VibeIslandDashboard) throws {
+        try save(dashboard.sessions.map(\.agentEvent))
     }
 
     func appendResponse(_ response: VibeIslandAgentResponse) throws {
@@ -127,6 +135,8 @@ final class VibeIslandEventStore {
     }
 }
 
+extension VibeIslandEventStore: VibeIslandDashboardSnapshotStore {}
+
 private extension VibeIslandAgentEvent {
     var session: VibeSession {
         VibeSession(
@@ -140,6 +150,39 @@ private extension VibeIslandAgentEvent {
             action: action,
             tint: tint.color
         )
+    }
+}
+
+private extension VibeSession {
+    var agentEvent: VibeIslandAgentEvent {
+        VibeIslandAgentEvent(
+            id: id,
+            agent: agent,
+            terminal: terminal,
+            title: title,
+            detail: detail,
+            elapsed: elapsed,
+            state: state,
+            action: action,
+            tint: persistedTint
+        )
+    }
+
+    var persistedTint: String {
+        if let agentKind {
+            switch agentKind {
+            case .claude: return "orange"
+            case .codex: return "cyan"
+            case .gemini: return "green"
+            }
+        }
+
+        switch agent.lowercased() {
+        case "claude": return "orange"
+        case "codex": return "cyan"
+        case "gemini": return "green"
+        default: return action == .approval ? "orange" : "cyan"
+        }
     }
 }
 

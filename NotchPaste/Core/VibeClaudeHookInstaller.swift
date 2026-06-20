@@ -146,6 +146,35 @@ enum VibeClaudeHookInstaller {
                 pass
             return None
 
+        def process_output(args):
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=2)
+                return result.stdout.strip()
+            except Exception:
+                return ""
+
+        def detect_agent():
+            pid = os.getppid()
+            seen = set()
+            for _ in range(12):
+                if not pid or pid <= 1 or pid in seen:
+                    break
+                seen.add(pid)
+                command = process_output(["ps", "-p", str(pid), "-o", "args="]).lower()
+                tokens = command.replace("/", " ").replace("\\t", " ").split()
+                if "codex" in tokens:
+                    return "codex"
+                if "gemini" in tokens:
+                    return "gemini"
+                if "claude" in tokens:
+                    return "claude"
+                parent = process_output(["ps", "-p", str(pid), "-o", "ppid="])
+                try:
+                    pid = int(parent)
+                except Exception:
+                    break
+            return "claude"
+
         def send_event(state):
             try:
                 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -161,6 +190,12 @@ enum VibeClaudeHookInstaller {
                 return None
             return None
 
+        def first_value(data, names, default=None):
+            for name in names:
+                if name in data and data.get(name) is not None:
+                    return data.get(name)
+            return default
+
         def main():
             try:
                 data = json.load(sys.stdin)
@@ -172,8 +207,10 @@ enum VibeClaudeHookInstaller {
                 "session_id": data.get("session_id", "unknown"),
                 "cwd": data.get("cwd", ""),
                 "event": event,
+                "agent": detect_agent(),
                 "pid": os.getppid(),
                 "tty": get_tty(),
+                "message": first_value(data, ["message", "prompt", "text", "output", "response", "content", "assistant_message", "assistantMessage"]),
             }
 
             if event == "UserPromptSubmit":
@@ -207,7 +244,7 @@ enum VibeClaudeHookInstaller {
                     sys.exit(0)
                 state["status"] = "waiting_for_input" if data.get("notification_type") == "idle_prompt" else "notification"
                 state["notification_type"] = data.get("notification_type")
-                state["message"] = data.get("message")
+                state["message"] = first_value(data, ["message", "prompt", "text", "output", "response", "content", "assistant_message", "assistantMessage"])
             elif event in ("Stop", "StopFailure", "SessionStart"):
                 state["status"] = "waiting_for_input"
             elif event == "SessionEnd":

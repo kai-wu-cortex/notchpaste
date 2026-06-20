@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 import GRDB
 @testable import NotchPaste
 
@@ -7,9 +8,9 @@ import GRDB
 struct ClipboardStoreTests {
 
     /// 给每个测试一个隔离的内存 DB。
-    func makeStore(maxItems: Int = 200) throws -> ClipboardStore {
+    func makeStore(maxItems: Int = 200, snapshotDelay: TimeInterval = 0.02) throws -> ClipboardStore {
         let dbQueue = try DatabaseQueue() // in-memory
-        return try ClipboardStore(dbQueue: dbQueue, maxItems: maxItems)
+        return try ClipboardStore(dbQueue: dbQueue, maxItems: maxItems, snapshotDelay: snapshotDelay)
     }
 
     @Test("add then list returns the item")
@@ -113,6 +114,19 @@ struct ClipboardStoreTests {
         else { Issue.record("Expected .text") }
     }
 
+    @Test("memory filter matches store query")
+    func memoryFilterMatchesStoreQuery() throws {
+        let store = try makeStore(snapshotDelay: 0)
+        let hello = ClipboardItem(id: UUID(), type: .text("Hello World"), createdAt: Date(timeIntervalSince1970: 100), pinned: true, sourceAppBundleID: nil)
+        let moon = ClipboardItem(id: UUID(), type: .text("Goodbye Moon"), createdAt: Date(timeIntervalSince1970: 200), pinned: false, sourceAppBundleID: nil)
+        try store.add(hello)
+        try store.add(moon)
+
+        let all = try store.allItems()
+        #expect(ClipboardStore.filter(all, category: .all, search: "hello") == (try store.query(category: .all, search: "hello")))
+        #expect(ClipboardStore.filter(all, category: .favorite) == (try store.query(category: .favorite)))
+    }
+
     @Test("publisher emits after add")
     func publisherEmits() async throws {
         let store = try makeStore()
@@ -123,6 +137,86 @@ struct ClipboardStoreTests {
         try await Task.sleep(nanoseconds: 50_000_000)
         #expect(received.contains { $0.count == 1 })
         cancellable.cancel()
+    }
+
+    @Test("publisher coalesces rapid adds")
+    func publisherCoalescesRapidAdds() async throws {
+        let store = try makeStore(maxItems: 50, snapshotDelay: 0.04)
+        var received: [[ClipboardItem]] = []
+        let cancellable = store.itemsPublisher.sink { received.append($0) }
+
+        for index in 0..<10 {
+            try store.add(ClipboardItem.text("rapid \(index)"))
+        }
+
+        #expect(received.map(\.count) == [0])
+        try await Task.sleep(nanoseconds: 90_000_000)
+        #expect(received.map(\.count) == [0, 10])
+        cancellable.cancel()
+    }
+
+    @MainActor
+    @Test("panel view model refreshes asynchronously and caches filtered items")
+    func panelViewModelRefreshesAsynchronously() async throws {
+        let store = try makeStore(snapshotDelay: 10)
+        let item = ClipboardItem.text("async panel item")
+        try store.add(item)
+        let viewModel = PanelViewModel(
+            store: store,
+            paster: PasteService(),
+            onCommit: { nil }
+        )
+
+        viewModel.searchTerm = "async"
+        viewModel.refreshAsync()
+
+        for _ in 0..<20 where viewModel.filteredItems.map(\.id) != [item.id] {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        #expect(viewModel.filteredItems.map(\.id) == [item.id])
+    }
+
+    @Test("file drag pasteboard item exposes file URL type")
+    func fileDragPasteboardItemExposesFileURLType() throws {
+        let url = URL(fileURLWithPath: "/tmp/notchpaste-drag-test.txt")
+        let item = FileDragPasteboardFactory.makePasteboardItem(for: url)
+
+        #expect(item.string(forType: .fileURL) == url.absoluteString)
+        #expect(item.string(forType: .URL) == url.absoluteString)
+    }
+
+    @Test("file drag pasteboard items expose every file URL")
+    func fileDragPasteboardItemsExposeEveryFileURL() throws {
+        let urls = [
+            URL(fileURLWithPath: "/tmp/notchpaste-drag-a.txt"),
+            URL(fileURLWithPath: "/tmp/notchpaste-drag-b.txt")
+        ]
+
+        let items = FileDragPasteboardFactory.makePasteboardItems(for: urls)
+
+        #expect(items.map { $0.string(forType: .fileURL) } == urls.map(\.absoluteString))
+    }
+
+    @Test("file drag starts after pointer movement threshold")
+    func fileDragStartsAfterPointerMovementThreshold() {
+        #expect(!FileDragGesturePolicy.shouldStartDrag(from: .zero, to: CGPoint(x: 2, y: 2)))
+        #expect(FileDragGesturePolicy.shouldStartDrag(from: .zero, to: CGPoint(x: 5, y: 0)))
+    }
+
+    @Test("image drag pasteboard item exposes image data")
+    func imageDragPasteboardItemExposesImageData() throws {
+        let data = try #require(Self.makePNGData())
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("notchpaste-image-drag-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let item = ImageDragPasteboardFactory.makePasteboardItem(for: data, fileURL: url)
+
+        #expect(item.data(forType: .png) == data)
+        #expect(item.data(forType: .tiff) != nil)
+        #expect(item.string(forType: .fileURL) == url.absoluteString)
+        #expect(FileManager.default.fileExists(atPath: url.path))
     }
 
     @Test("dedup is stable across reopened store (SHA-256 hash, not Swift hashValue)")
@@ -145,4 +239,18 @@ struct ClipboardStoreTests {
         let items = try store2.allItems()
         #expect(items.count == 1, "Dedup must work across store reopens — got \(items.count) rows")
     }
+
+    static func makePNGData() -> Data? {
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 4, height: 4).fill()
+        image.unlockFocus()
+
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
 }

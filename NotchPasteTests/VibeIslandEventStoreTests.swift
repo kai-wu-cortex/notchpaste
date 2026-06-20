@@ -72,6 +72,48 @@ struct VibeIslandEventStoreTests {
         #expect(responses[2].value == "iTerm")
     }
 
+    @Test("model writes free text reply for selected agent session")
+    @MainActor
+    func modelWritesFreeTextReplyForSelectedAgentSession() throws {
+        let dir = try temporaryDirectory()
+        let store = VibeIslandEventStore(directory: dir)
+        let model = VibeIslandDashboardModel(dashboard: .demo, eventStore: store)
+        let session = model.dashboard.sessions.first { $0.agent == "Codex" }
+
+        model.submitReply("继续检查失败原因", sessionID: session?.id)
+
+        let response = try #require(store.loadResponses().first)
+        #expect(response.sessionID == session?.id)
+        #expect(response.action == .reply)
+        #expect(response.value == "继续检查失败原因")
+    }
+
+    @Test("model keeps restored agent sessions while live store is empty")
+    @MainActor
+    func modelKeepsRestoredAgentSessionsWhileLiveStoreIsEmpty() {
+        let liveStore = VibeAgentStore()
+        var restored = VibeIslandDashboard.empty
+        restored.sessions = [
+            VibeSession(
+                agent: "Claude",
+                terminal: "Terminal",
+                title: "pasteboard",
+                detail: "Waiting for input",
+                elapsed: "live",
+                state: "Waiting for input",
+                action: .jump,
+                tint: .orange,
+                agentKind: .claude,
+                agentSessionID: "claude-idle"
+            )
+        ]
+
+        let model = VibeIslandDashboardModel(dashboard: restored, eventStore: nil, agentStore: liveStore)
+
+        #expect(model.dashboard.sessions.map(\.agent) == ["Claude"])
+        #expect(model.visibleRows.map(\.projectTitle) == ["pasteboard"])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("notchpaste-vibe-tests-\(UUID().uuidString)", isDirectory: true)

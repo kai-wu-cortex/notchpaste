@@ -2,6 +2,13 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum NotchAnimationTiming {
+    static let openResponse: TimeInterval = 0.42
+    static let openDampingFraction = 0.8
+    static let closeResponse: TimeInterval = 0.45
+    static let closeDampingFraction = 1.0
+}
+
 /// 刘海窗口的状态机。简化自 vibe-notch (Apache 2.0)：
 /// - .closed：默认；与物理刘海完全同形
 /// - .opened：展开成剪贴板面板
@@ -76,14 +83,28 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Animations (与 vibe-notch 一致的 spring 配置)
 
-    static let openAnim = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
-    static let closeAnim = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
+    static let openAnimationResponse = NotchAnimationTiming.openResponse
+    static let openAnimationDampingFraction = NotchAnimationTiming.openDampingFraction
+    static let closeAnimationResponse = NotchAnimationTiming.closeResponse
+    static let closeAnimationDampingFraction = NotchAnimationTiming.closeDampingFraction
+
+    static let openAnim = Animation.spring(
+        response: openAnimationResponse,
+        dampingFraction: openAnimationDampingFraction,
+        blendDuration: 0
+    )
+    static let closeAnim = Animation.spring(
+        response: closeAnimationResponse,
+        dampingFraction: closeAnimationDampingFraction,
+        blendDuration: 0
+    )
 
     // MARK: - Private
 
     private var cancellables = Set<AnyCancellable>()
     private let events = EventMonitors.shared
     private var hoverTimer: DispatchWorkItem?
+    private var deferredPasteTargetWork: DispatchWorkItem?
 
     // MARK: - Init
 
@@ -176,20 +197,46 @@ final class NotchViewModel: ObservableObject {
         // 之后再调用 notchOpen（如 hover 后又点击）不能覆盖：
         // 因为此时 panel 已经 makeKey，frontmostApplication 可能是我们自己。
         if status == .closed {
-            previousPasteTarget = PasteTarget.capture()
+            previousPasteTarget = PasteTarget.captureApplicationOnly()
+            scheduleFullPasteTargetCapture()
         }
         openReason = reason
         status = .opened
     }
 
     func notchClose() {
+        deferredPasteTargetWork?.cancel()
+        deferredPasteTargetWork = nil
         status = .closed
         contentType = .list
+    }
+
+    private func scheduleFullPasteTargetCapture() {
+        deferredPasteTargetWork?.cancel()
+
+        guard let targetApp = previousPasteTarget?.app else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.status == .opened else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let target = PasteTarget.captureFocusedElementTarget(app: targetApp)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.status == .opened else { return }
+                    self.previousPasteTarget = target
+                }
+            }
+        }
+        deferredPasteTargetWork = work
+        DispatchQueue.main.async(execute: work)
     }
 
     func presentAgentInteraction() {
         contentType = .vibe
         notchOpen(reason: .agentInteraction)
+    }
+
+    func presentAgentAttention(_ activity: VibeNotchActivity) {
+        guard activity == .needsInteraction else { return }
+        presentAgentInteraction()
     }
 
     func toggle() {

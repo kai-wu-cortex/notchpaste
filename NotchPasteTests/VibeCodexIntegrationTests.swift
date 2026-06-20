@@ -64,7 +64,8 @@ struct VibeCodexIntegrationTests {
             toolInput: ["command": AnyCodable("npm test")],
             toolUseId: "codex-tool-1",
             usageLabel: nil,
-            message: nil
+            message: nil,
+            questionOptions: nil
         )
 
         let store = VibeAgentStore()

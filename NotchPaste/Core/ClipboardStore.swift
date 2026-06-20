@@ -11,7 +11,7 @@ import os
 /// - 写入时按 (kind, content_hash) 去重 —— 重复内容仅刷新 created_at。
 /// - 写入后自动裁剪：保留最多 maxItems 条非 pinned 项。
 /// - 通过 Combine Publisher `itemsPublisher` 通知订阅者最新列表。
-final class ClipboardStore {
+final class ClipboardStore: @unchecked Sendable {
 
     /// 类别筛选，对应 UI 左侧 sidebar。
     enum Category: String, CaseIterable {
@@ -68,6 +68,11 @@ final class ClipboardStore {
     private let dbQueue: DatabaseQueue
     private let maxItems: Int
     private let subject = CurrentValueSubject<[ClipboardItem], Never>([])
+    private let snapshotDelay: TimeInterval
+    private let snapshotQueue = DispatchQueue(label: "com.notchpaste.clipboard.snapshot", qos: .userInitiated)
+    private let snapshotLock = NSLock()
+    private var pendingSnapshotWork: DispatchWorkItem?
+    private var nonPinnedItemCount: Int
 
     var itemsPublisher: AnyPublisher<[ClipboardItem], Never> {
         subject.eraseToAnyPublisher()
@@ -81,12 +86,21 @@ final class ClipboardStore {
         try self.init(dbQueue: dbQueue, maxItems: maxItems)
     }
 
-    init(dbQueue: DatabaseQueue, maxItems: Int) throws {
+    init(dbQueue: DatabaseQueue, maxItems: Int, snapshotDelay: TimeInterval = 0.02) throws {
         self.dbQueue = dbQueue
         self.maxItems = maxItems
+        self.snapshotDelay = snapshotDelay
+        self.nonPinnedItemCount = 0
         try Self.migrator.migrate(dbQueue)
+        self.nonPinnedItemCount = try Self.fetchNonPinnedItemCount(dbQueue)
         let snapshot = try fetchAllItems()
         subject.send(snapshot)
+    }
+
+    deinit {
+        snapshotLock.lock()
+        pendingSnapshotWork?.cancel()
+        snapshotLock.unlock()
     }
 
     private static func defaultDatabaseURL() throws -> URL {
@@ -139,39 +153,63 @@ final class ClipboardStore {
                         item.lastUsedAt?.timeIntervalSince1970
                     ]
                 )
+                if !item.pinned {
+                    nonPinnedItemCount += 1
+                }
             }
-            try db.execute(
-                sql: """
-                DELETE FROM clipboard_item
-                WHERE pinned = 0
-                  AND id NOT IN (
-                    SELECT id FROM clipboard_item
+            if nonPinnedItemCount > maxItems {
+                try db.execute(
+                    sql: """
+                    DELETE FROM clipboard_item
                     WHERE pinned = 0
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                  )
-                """,
-                arguments: [maxItems]
-            )
+                      AND id NOT IN (
+                        SELECT id FROM clipboard_item
+                        WHERE pinned = 0
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                      )
+                    """,
+                    arguments: [maxItems]
+                )
+                nonPinnedItemCount = maxItems
+            }
         }
-        try emitSnapshot()
+        scheduleSnapshotEmit()
     }
 
     func delete(id: UUID) throws {
         try dbQueue.write { db in
+            let pinned: Bool? = try Bool.fetchOne(
+                db,
+                sql: "SELECT pinned FROM clipboard_item WHERE id = ?",
+                arguments: [id.uuidString]
+            )
             try db.execute(sql: "DELETE FROM clipboard_item WHERE id = ?", arguments: [id.uuidString])
+            if pinned == false {
+                nonPinnedItemCount = max(0, nonPinnedItemCount - 1)
+            }
         }
-        try emitSnapshot()
+        scheduleSnapshotEmit()
     }
 
     func togglePin(id: UUID) throws {
         try dbQueue.write { db in
+            let wasPinned: Bool? = try Bool.fetchOne(
+                db,
+                sql: "SELECT pinned FROM clipboard_item WHERE id = ?",
+                arguments: [id.uuidString]
+            )
             try db.execute(
                 sql: "UPDATE clipboard_item SET pinned = NOT pinned WHERE id = ?",
                 arguments: [id.uuidString]
             )
+            if wasPinned == true {
+                nonPinnedItemCount += 1
+            } else if wasPinned == false {
+                nonPinnedItemCount = max(0, nonPinnedItemCount - 1)
+            }
         }
-        try emitSnapshot()
+        scheduleSnapshotEmit()
     }
 
     /// 标记一项被使用：usage_count +1，last_used_at = now。
@@ -183,7 +221,7 @@ final class ClipboardStore {
                 arguments: [date.timeIntervalSince1970, id.uuidString]
             )
         }
-        try emitSnapshot()
+        scheduleSnapshotEmit()
     }
 
     /// 返回全部历史（newest first）。
@@ -196,6 +234,10 @@ final class ClipboardStore {
     /// 其它 → 该 kind 的 newest first。
     func query(category: Category, search: String? = nil) throws -> [ClipboardItem] {
         let all = try fetchAllItems()
+        return Self.filter(all, category: category, search: search)
+    }
+
+    static func filter(_ all: [ClipboardItem], category: Category, search: String? = nil) -> [ClipboardItem] {
         let filtered: [ClipboardItem]
 
         switch category {
@@ -247,8 +289,30 @@ final class ClipboardStore {
 
     // MARK: - Internals
 
-    private func emitSnapshot() throws {
-        subject.send(try fetchAllItems())
+    private func scheduleSnapshotEmit() {
+        if snapshotDelay <= 0 {
+            emitSnapshot()
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.emitSnapshot()
+        }
+
+        snapshotLock.lock()
+        pendingSnapshotWork?.cancel()
+        pendingSnapshotWork = work
+        snapshotLock.unlock()
+
+        snapshotQueue.asyncAfter(deadline: .now() + snapshotDelay, execute: work)
+    }
+
+    private func emitSnapshot() {
+        do {
+            subject.send(try fetchAllItems())
+        } catch {
+            AppLogger.store.error("snapshot emit failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func fetchAllItems() throws -> [ClipboardItem] {
@@ -330,6 +394,12 @@ final class ClipboardStore {
             usageCount: usageCount,
             lastUsedAt: lastUsedAt
         )
+    }
+
+    private static func fetchNonPinnedItemCount(_ dbQueue: DatabaseQueue) throws -> Int {
+        try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clipboard_item WHERE pinned = 0") ?? 0
+        }
     }
 
     private static func kindString(for type: ItemType) -> String {
