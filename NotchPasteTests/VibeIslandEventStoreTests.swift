@@ -114,6 +114,36 @@ struct VibeIslandEventStoreTests {
         #expect(model.visibleRows.map(\.projectTitle) == ["pasteboard"])
     }
 
+    @Test("model restores agent sessions from disk asynchronously")
+    @MainActor
+    func modelRestoresAgentSessionsFromDiskAsynchronously() async throws {
+        let dir = try temporaryDirectory()
+        let store = VibeIslandEventStore(directory: dir)
+        try store.save([
+            VibeIslandAgentEvent(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
+                agent: "Codex",
+                terminal: "Terminal",
+                title: "pasteboard",
+                detail: "Running",
+                elapsed: "live",
+                state: "Running Tool",
+                action: .monitor,
+                tint: "cyan"
+            )
+        ])
+
+        let model = VibeIslandDashboardModel(dashboard: .empty, eventStore: store, agentStore: nil)
+        #expect(model.dashboard.sessions.isEmpty)
+
+        model.loadRestoredDashboardIfNeeded()
+        for _ in 0..<20 where model.dashboard.sessions.isEmpty {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(model.dashboard.sessions.map(\.agent) == ["Codex"])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("notchpaste-vibe-tests-\(UUID().uuidString)", isDirectory: true)

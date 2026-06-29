@@ -23,6 +23,7 @@ struct VibeClaudeIntegrationTests {
 
         #expect(script.contains(#"SOCKET_PATH = "/tmp/notchpaste-test.sock""#))
         #expect(hooks["PermissionRequest"] != nil)
+        #expect(hooks["AskUserQuestion"] != nil)
         #expect(hooks["PreToolUse"] != nil)
         #expect(try VibeClaudeHookInstaller.isInstalled(claudeDir: dir))
     }
@@ -60,6 +61,38 @@ struct VibeClaudeIntegrationTests {
         #expect(session?.approvalID == "tool-1")
         #expect(session?.responseMode == .socket)
         #expect(session?.terminalProcessID == 123)
+    }
+
+    @Test("Claude AskUserQuestion becomes question session, not approval")
+    @MainActor
+    func claudeAskUserQuestionBecomesQuestionSessionNotApproval() {
+        let store = VibeAgentStore()
+        let event = VibeClaudeHookEvent(
+            sessionId: "question-session",
+            cwd: "/Users/kyle/project/ink-api",
+            event: "AskUserQuestion",
+            status: "waiting_for_approval",
+            pid: 456,
+            tty: "/dev/ttys003",
+            tool: "AskUserQuestion",
+            toolInput: ["questions": AnyCodable("请选择优化范围")],
+            toolUseId: nil,
+            notificationType: nil,
+            message: "请选择优化范围",
+            questionOptions: ["客户端烫印工艺", "品特工厂涂布生产工艺", "整体技术体系"],
+            agent: nil
+        )
+
+        store.process(event.agentEvent)
+
+        let session = store.dashboard.sessions.first
+        #expect(session?.state == "Waiting for input")
+        #expect(session?.action == .question)
+        #expect(session?.primaryActionTitle == "Reply")
+        #expect(session?.secondaryActionTitle == nil)
+        #expect(session?.questionOptions == ["客户端烫印工艺", "品特工厂涂布生产工艺", "整体技术体系"])
+        #expect(session?.responseMode == VibeAgentResponseMode.none)
+        #expect(store.dashboard.notchActivity == .needsInteraction)
     }
 
     @Test("Claude socket event can be reclassified as Codex")

@@ -19,11 +19,12 @@ struct VibeIslandDashboardTests {
         #expect(dashboard.usageMeters.isEmpty)
     }
 
-    @Test("approval session exposes allow and deny actions")
-    func approvalSessionExposesAllowAndDenyActions() {
+    @Test("approval session exposes vibe permission actions")
+    func approvalSessionExposesVibePermissionActions() {
         let approval = VibeIslandDashboard.demo.sessions.first { $0.action == .approval }
 
-        #expect(approval?.primaryActionTitle == "Allow")
+        #expect(approval?.approvalActions.map(\.title) == ["Deny", "Allow Once", "Allow All", "Bypass"])
+        #expect(approval?.primaryActionTitle == "Allow Once")
         #expect(approval?.secondaryActionTitle == "Deny")
     }
 
@@ -38,7 +39,8 @@ struct VibeIslandDashboardTests {
         #expect(row?.detail == "Edit src/auth/middleware.ts  +3 -1")
         #expect(row?.showsInlineApproval == true)
         #expect(row?.secondaryActionTitle == "Deny")
-        #expect(row?.primaryActionTitle == "Allow")
+        #expect(row?.primaryActionTitle == "Allow Once")
+        #expect(row?.approvalActions.map(\.title) == ["Deny", "Allow Once", "Allow All", "Bypass"])
     }
 
     @Test("dashboard exposes notch activity for running and interactive sessions")
@@ -96,6 +98,34 @@ struct VibeIslandDashboardTests {
         )
 
         #expect(completedDashboard.notchActivity == .idle)
+    }
+
+    @Test("monitor sessions in waiting or stopped states do not show running activity")
+    func monitorSessionsInWaitingOrStoppedStatesDoNotShowRunningActivity() {
+        for state in ["Waiting for input", "Stop", "SessionEnd", "Unknown", "需要终端确认"] {
+            let dashboard = VibeIslandDashboard(
+                supportedAgentCount: 1,
+                supportedTerminalCount: 1,
+                sessions: [
+                    VibeSession(
+                        agent: "Claude",
+                        terminal: "Terminal",
+                        title: "pasteboard",
+                        detail: state,
+                        elapsed: "live",
+                        state: state,
+                        action: .monitor,
+                        tint: .orange
+                    )
+                ],
+                question: nil,
+                planReview: VibePlanReview(title: "", summary: "", points: []),
+                usageMeters: [],
+                supportedAgents: ["Claude"]
+            )
+
+            #expect(dashboard.notchActivity == .idle)
+        }
     }
 
     @Test("notch diff prefers pending session and falls back to latest diff")
@@ -173,6 +203,19 @@ struct VibeIslandDashboardTests {
         )
 
         #expect(dashboard.notchCodeDiff(preferredSessionID: approval.id) == fallbackDiff)
+    }
+
+    @Test("latest diff tab is collapsed by default and expands to all lines")
+    func latestDiffTabIsCollapsedByDefaultAndExpandsToAllLines() {
+        let diff = [
+            VibeCodeDiffLine("Edit a.swift", style: .context),
+            VibeCodeDiffLine("- old", style: .removed),
+            VibeCodeDiffLine("+ new", style: .added)
+        ]
+
+        #expect(!NotchLatestDiffTabPolicy.defaultIsExpanded)
+        #expect(NotchLatestDiffTabPolicy.visibleLines(from: diff, isExpanded: false).isEmpty)
+        #expect(NotchLatestDiffTabPolicy.visibleLines(from: diff, isExpanded: true) == diff)
     }
 
     @Test("open selects conversation detail")

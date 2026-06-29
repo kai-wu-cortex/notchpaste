@@ -107,7 +107,11 @@ final class ClipboardMonitor: ClipboardChangeIgnoring {
            let png = pngData(from: nsImage) {
             return ClipboardItem.image(png, sourceAppBundleID: sourceAppBundleID)
         }
-        // 4. 文本（先试链接识别，再 fallback 到普通文本）
+        // 4. 浏览器右键复制链接时，常只写 public.url / legacy URL 类型，不一定写 .string。
+        if let s = browserURLString(from: pasteboard) {
+            return textItem(from: s, sourceAppBundleID: sourceAppBundleID)
+        }
+        // 5. 文本（先试链接识别，再 fallback 到普通文本）
         if let s = pasteboard.string(forType: .string), !s.isEmpty {
             return textItem(from: s, sourceAppBundleID: sourceAppBundleID)
         }
@@ -140,6 +144,27 @@ final class ClipboardMonitor: ClipboardChangeIgnoring {
             if let image = NSImage(data: data), let png = pngData(from: image) {
                 return ClipboardItem.image(png, sourceAppBundleID: sourceAppBundleID)
             }
+        }
+        return nil
+    }
+
+    private static func browserURLString(from pasteboard: NSPasteboard) -> String? {
+        let urlTypes: [NSPasteboard.PasteboardType] = [
+            NSPasteboard.PasteboardType("public.url"),
+            NSPasteboard.PasteboardType("NSURLPboardType"),
+            NSPasteboard.PasteboardType("Apple URL pasteboard type")
+        ]
+
+        for type in urlTypes {
+            if let string = normalizedRichText(pasteboard.string(forType: type) ?? "") {
+                return string
+            }
+            guard let data = pasteboard.data(forType: type),
+                  let string = String(data: data, encoding: .utf8),
+                  let normalized = normalizedRichText(string) else {
+                continue
+            }
+            return normalized
         }
         return nil
     }

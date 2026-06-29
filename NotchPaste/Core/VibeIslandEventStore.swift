@@ -33,11 +33,12 @@ protocol VibeIslandDashboardSnapshotStore: AnyObject {
     func save(_ dashboard: VibeIslandDashboard) throws
 }
 
-final class VibeIslandEventStore {
+final class VibeIslandEventStore: @unchecked Sendable {
     private let directory: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let lock = NSLock()
 
     init(directory: URL, fileManager: FileManager = .default) {
         self.directory = directory
@@ -68,18 +69,22 @@ final class VibeIslandEventStore {
     }
 
     func loadDashboard() throws -> VibeIslandDashboard {
-        let events = try loadEvents()
-        guard !events.isEmpty else { return .empty }
+        try locked {
+            let events = try loadEventsUnlocked()
+            guard !events.isEmpty else { return .empty }
 
-        var dashboard = VibeIslandDashboard.empty
-        dashboard.sessions = events.map { $0.session }
-        return dashboard
+            var dashboard = VibeIslandDashboard.empty
+            dashboard.sessions = events.map { $0.session }
+            return dashboard
+        }
     }
 
     func save(_ events: [VibeIslandAgentEvent]) throws {
-        try ensureDirectory()
-        let data = try encoder.encode(events)
-        try data.write(to: sessionsURL, options: .atomic)
+        try locked {
+            try ensureDirectoryUnlocked()
+            let data = try encoder.encode(events)
+            try data.write(to: sessionsURL, options: .atomic)
+        }
     }
 
     func save(_ dashboard: VibeIslandDashboard) throws {
@@ -87,22 +92,30 @@ final class VibeIslandEventStore {
     }
 
     func appendResponse(_ response: VibeIslandAgentResponse) throws {
-        try ensureDirectory()
-        let data = try encoder.encode(response)
-        var line = data
-        line.append(0x0A)
+        try locked {
+            try ensureDirectoryUnlocked()
+            let data = try encoder.encode(response)
+            var line = data
+            line.append(0x0A)
 
-        if fileManager.fileExists(atPath: responsesURL.path) {
-            let handle = try FileHandle(forWritingTo: responsesURL)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-            try handle.close()
-        } else {
-            try line.write(to: responsesURL, options: .atomic)
+            if fileManager.fileExists(atPath: responsesURL.path) {
+                let handle = try FileHandle(forWritingTo: responsesURL)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: line)
+                try handle.close()
+            } else {
+                try line.write(to: responsesURL, options: .atomic)
+            }
         }
     }
 
     func loadResponses() throws -> [VibeIslandAgentResponse] {
+        try locked {
+            try loadResponsesUnlocked()
+        }
+    }
+
+    private func loadResponsesUnlocked() throws -> [VibeIslandAgentResponse] {
         guard fileManager.fileExists(atPath: responsesURL.path) else { return [] }
         let data = try Data(contentsOf: responsesURL)
         let lines = String(decoding: data, as: UTF8.self)
@@ -116,14 +129,20 @@ final class VibeIslandEventStore {
         }
     }
 
-    private func loadEvents() throws -> [VibeIslandAgentEvent] {
+    private func loadEventsUnlocked() throws -> [VibeIslandAgentEvent] {
         guard fileManager.fileExists(atPath: sessionsURL.path) else { return [] }
         let data = try Data(contentsOf: sessionsURL)
         return try decoder.decode([VibeIslandAgentEvent].self, from: data)
     }
 
-    private func ensureDirectory() throws {
+    private func ensureDirectoryUnlocked() throws {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 
     private var sessionsURL: URL {

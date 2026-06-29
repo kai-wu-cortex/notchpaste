@@ -54,9 +54,7 @@ struct ClipboardListView: View {
             }
         }
         .onAppear {
-            if viewModel.items.isEmpty {
-                viewModel.refreshAsync()
-            }
+            viewModel.refreshAsyncIfNeeded(after: NotchOpenPerformancePolicy.deferredWorkDelay)
             if Self.autofocusesSearchOnAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
                     searchFocused = true

@@ -167,15 +167,19 @@ struct VibeSession: Identifiable {
 
     var primaryActionTitle: String {
         switch action {
-        case .approval: return "Allow"
+        case .approval: return VibeApprovalAction.allowOnce.title
         case .question: return "Reply"
         case .jump: return "Jump"
         case .monitor: return "Open"
         }
     }
 
+    var approvalActions: [VibeApprovalAction] {
+        action == .approval ? VibeApprovalAction.allCases : []
+    }
+
     var secondaryActionTitle: String? {
-        action == .approval ? "Deny" : nil
+        action == .approval ? VibeApprovalAction.deny.title : nil
     }
 
     var needsJumpAttention: Bool {
@@ -186,7 +190,18 @@ struct VibeSession: Identifiable {
 
     var isRunningMonitor: Bool {
         guard action == .monitor else { return false }
-        let inactiveStates = ["Completed", "Failed", "Ready", "Denied", "Approved"]
+        let inactiveStates = [
+            "Completed",
+            "Failed",
+            "Ready",
+            "Denied",
+            "Approved",
+            "Waiting for input",
+            "Stop",
+            "SessionEnd",
+            "Unknown",
+            "需要终端确认"
+        ]
         return !inactiveStates.contains(state)
     }
 }
@@ -229,6 +244,90 @@ enum VibeSessionAction: String, Codable, Equatable {
     case question
     case jump
     case monitor
+}
+
+enum VibeApprovalAction: String, CaseIterable, Equatable {
+    case deny
+    case allowOnce
+    case allowAll
+    case bypass
+
+    var title: String {
+        switch self {
+        case .deny: return "Deny"
+        case .allowOnce: return "Allow Once"
+        case .allowAll: return "Allow All"
+        case .bypass: return "Bypass"
+        }
+    }
+
+    var responseValue: String {
+        switch self {
+        case .deny: return "denied"
+        case .allowOnce: return "allow_once"
+        case .allowAll: return "allow_all"
+        case .bypass: return "bypass"
+        }
+    }
+
+    var approvedState: String {
+        switch self {
+        case .deny: return "Denied"
+        case .allowOnce: return "Approved"
+        case .allowAll: return "Approved All"
+        case .bypass: return "Bypassed"
+        }
+    }
+
+    var localFeedback: String {
+        switch self {
+        case .deny: return "已拒绝"
+        case .allowOnce: return "已批准一次"
+        case .allowAll: return "已全部批准"
+        case .bypass: return "已跳过"
+        }
+    }
+
+    var isDeny: Bool {
+        self == .deny
+    }
+
+    var backgroundColor: Color {
+        switch self {
+        case .deny:
+            return Color.white.opacity(0.13)
+        case .allowOnce:
+            return Color.white.opacity(0.92)
+        case .allowAll:
+            return Color(red: 1.0, green: 0.53, blue: 0.13)
+        case .bypass:
+            return Color(red: 0.82, green: 0.16, blue: 0.22)
+        }
+    }
+
+    var pressedBackgroundColor: Color {
+        switch self {
+        case .deny:
+            return Color.white.opacity(0.20)
+        case .allowOnce:
+            return Color.white.opacity(0.78)
+        case .allowAll:
+            return Color(red: 0.88, green: 0.43, blue: 0.08)
+        case .bypass:
+            return Color(red: 0.68, green: 0.12, blue: 0.18)
+        }
+    }
+
+    var foregroundColor: Color {
+        switch self {
+        case .deny:
+            return .white.opacity(0.84)
+        case .allowOnce, .allowAll:
+            return .black.opacity(0.88)
+        case .bypass:
+            return .white.opacity(0.9)
+        }
+    }
 }
 
 struct VibeCodeDiffLine: Equatable {
@@ -305,6 +404,7 @@ struct VibeNativeSessionRow: Identifiable {
     let codeDiff: [VibeCodeDiffLine]
     let questionOptions: [String]
     let history: [VibeSessionEvent]
+    let approvalActions: [VibeApprovalAction]
 
     init(session: VibeSession, usageLabel: String? = nil) {
         id = session.id
@@ -321,6 +421,7 @@ struct VibeNativeSessionRow: Identifiable {
         codeDiff = session.codeDiff
         questionOptions = session.questionOptions
         history = session.history
+        approvalActions = session.approvalActions
     }
 
     var showsInlineApproval: Bool {
@@ -330,6 +431,8 @@ struct VibeNativeSessionRow: Identifiable {
 
 @MainActor
 final class VibeIslandDashboardModel: ObservableObject {
+    private static let restoredDashboardLoadQueue = DispatchQueue(label: "com.notchpaste.vibe.dashboard-load", qos: .userInitiated)
+
     @Published var dashboard: VibeIslandDashboard
     @Published var selectedSessionID: UUID?
     @Published var selectedPermissionSessionID: UUID?
@@ -341,6 +444,7 @@ final class VibeIslandDashboardModel: ObservableObject {
     private let terminalJumper: (VibeSession) -> Void
     private let replySender: (VibeSession, String) -> Bool
     private var cancellables = Set<AnyCancellable>()
+    private var didRequestRestoredDashboard = false
 
     init(
         dashboard: VibeIslandDashboard = .empty,
@@ -368,6 +472,27 @@ final class VibeIslandDashboardModel: ObservableObject {
                 self?.lastAction = action
             }
             .store(in: &cancellables)
+    }
+
+    func loadRestoredDashboardIfNeeded() {
+        guard !didRequestRestoredDashboard, dashboard.sessions.isEmpty, let eventStore else { return }
+        didRequestRestoredDashboard = true
+
+        Self.restoredDashboardLoadQueue.async { [weak eventStore] in
+            let restoredDashboard = try? eventStore?.loadDashboard()
+
+            Task { @MainActor [weak self] in
+                guard
+                    let self,
+                    self.dashboard.sessions.isEmpty,
+                    let restoredDashboard,
+                    !restoredDashboard.sessions.isEmpty
+                else {
+                    return
+                }
+                self.dashboard = restoredDashboard
+            }
+        }
     }
 
     var nativeRows: [VibeNativeSessionRow] {
@@ -422,6 +547,25 @@ final class VibeIslandDashboardModel: ObservableObject {
             updateApproval(sessionID: sessionID, state: "Denied", detail: "Denied by user", feedback: "已拒绝")
         }
         writeResponse(sessionID: sessionID, action: .deny, value: "denied")
+    }
+
+    func performApproval(_ action: VibeApprovalAction, sessionID: UUID?) {
+        if action.isDeny {
+            deny(sessionID: sessionID)
+            return
+        }
+
+        if let agentStore {
+            agentStore.allow(sessionID: sessionID)
+        } else {
+            updateApproval(
+                sessionID: sessionID,
+                state: action.approvedState,
+                detail: "\(action.title) - click to jump",
+                feedback: action.localFeedback
+            )
+        }
+        writeResponse(sessionID: sessionID, action: .allow, value: action.responseValue)
     }
 
     func reply(_ option: String) {
@@ -706,8 +850,7 @@ struct VibeIslandReplicaView: View {
     ) {
         self.onJump = onJump
         let liveAgentStore = agentStore ?? VibeAgentStore.shared
-        let storedDashboard = try? eventStore?.loadDashboard()
-        let initialDashboard = dashboard ?? storedDashboard ?? liveAgentStore.dashboard
+        let initialDashboard = dashboard ?? liveAgentStore.dashboard
         _model = StateObject(
             wrappedValue: VibeIslandDashboardModel(
                 dashboard: initialDashboard,
@@ -743,6 +886,9 @@ struct VibeIslandReplicaView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.selectedSessionID)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.selectedPermissionSessionID)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingInteractionRow?.id)
+        .onAppear {
+            model.loadRestoredDashboardIfNeeded()
+        }
     }
 
     private var emptyState: some View {
@@ -874,15 +1020,12 @@ struct VibeIslandReplicaView: View {
                 permissionDiffBlock(row)
 
                 HStack(spacing: 10) {
-                    Button("Deny") {
-                        model.deny(sessionID: row.id)
+                    ForEach(row.approvalActions, id: \.self) { action in
+                        Button(action.title) {
+                            model.performApproval(action, sessionID: row.id)
+                        }
+                        .buttonStyle(VibeApprovalButtonStyle(action: action, height: 31, cornerRadius: 7))
                     }
-                    .buttonStyle(VibeModalButtonStyle(filled: false))
-
-                    Button("Allow") {
-                        model.allow(sessionID: row.id)
-                    }
-                    .buttonStyle(VibeModalButtonStyle(filled: true))
                 }
             }
             .padding(16)
@@ -1124,15 +1267,12 @@ struct VibeIslandReplicaView: View {
                 .clipped()
 
             HStack(spacing: 8) {
-                Button("Deny") {
-                    model.deny(sessionID: row.id)
+                ForEach(row.approvalActions, id: \.self) { action in
+                    Button(action.title) {
+                        model.performApproval(action, sessionID: row.id)
+                    }
+                    .buttonStyle(VibeApprovalButtonStyle(action: action, height: 31, cornerRadius: 7))
                 }
-                .buttonStyle(VibeModalButtonStyle(filled: false))
-
-                Button("Allow") {
-                    model.allow(sessionID: row.id)
-                }
-                .buttonStyle(VibeModalButtonStyle(filled: true))
             }
         }
         .padding(16)
@@ -1407,15 +1547,12 @@ struct VibeIslandReplicaView: View {
                     model.openConversation(sessionID: row.id)
                 }
 
-                Button("Deny") {
-                    model.deny(sessionID: row.id)
+                ForEach(row.approvalActions, id: \.self) { action in
+                    Button(action.title) {
+                        model.performApproval(action, sessionID: row.id)
+                    }
+                    .buttonStyle(VibeApprovalButtonStyle(action: action, height: 26, cornerRadius: 8, fontSize: 10))
                 }
-                .buttonStyle(VibeNativeButtonStyle(filled: false, tint: row.tint))
-
-                Button("Allow") {
-                    model.allow(sessionID: row.id)
-                }
-                .buttonStyle(VibeNativeButtonStyle(filled: true, tint: .white))
             }
         } else {
             HStack(spacing: 6) {
@@ -1447,8 +1584,8 @@ struct VibeIslandReplicaView: View {
 
     private func performPrimaryAction(for row: VibeNativeSessionRow) {
         switch row.primaryActionTitle {
-        case "Allow":
-            model.allow(sessionID: row.id)
+        case VibeApprovalAction.allowOnce.title:
+            model.performApproval(.allowOnce, sessionID: row.id)
         case "Jump":
             model.jump(sessionID: row.id)
             onJump()
@@ -1472,6 +1609,26 @@ private struct PermissionPreviewLine {
         self.text = text
         self.color = color
         self.background = background
+    }
+}
+
+private struct VibeApprovalButtonStyle: ButtonStyle {
+    let action: VibeApprovalAction
+    let height: CGFloat
+    let cornerRadius: CGFloat
+    var fontSize: CGFloat = 12
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: fontSize, weight: .semibold))
+            .foregroundColor(action.foregroundColor)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(configuration.isPressed ? action.pressedBackgroundColor : action.backgroundColor)
+            )
     }
 }
 

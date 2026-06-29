@@ -28,6 +28,7 @@ final class PanelViewModel: ObservableObject {
     /// 关闭面板回调，返回打开面板时记录的粘贴目标，供粘贴时恢复焦点。
     private let onCommit: () -> PasteTarget?
     private var cancellables = Set<AnyCancellable>()
+    private var deferredRefreshWork: DispatchWorkItem?
 
     init(
         store: ClipboardStore,
@@ -51,11 +52,15 @@ final class PanelViewModel: ObservableObject {
     }
 
     func refresh() {
+        deferredRefreshWork?.cancel()
+        deferredRefreshWork = nil
         items = (try? store.allItems()) ?? []
         selectedIndex = 0
     }
 
     func refreshAsync() {
+        deferredRefreshWork?.cancel()
+        deferredRefreshWork = nil
         let store = store
         DispatchQueue.global(qos: .userInitiated).async {
             let refreshed = (try? store.allItems()) ?? []
@@ -63,6 +68,23 @@ final class PanelViewModel: ObservableObject {
                 self?.items = refreshed
                 self?.selectedIndex = 0
             }
+        }
+    }
+
+    func refreshAsyncIfNeeded(after delay: TimeInterval = 0) {
+        guard items.isEmpty else { return }
+
+        deferredRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.items.isEmpty else { return }
+            self.refreshAsync()
+        }
+        deferredRefreshWork = work
+
+        if delay <= 0 {
+            DispatchQueue.main.async(execute: work)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 

@@ -13,6 +13,8 @@ import os
 /// - 通过 Combine Publisher `itemsPublisher` 通知订阅者最新列表。
 final class ClipboardStore: @unchecked Sendable {
 
+    static let defaultMaxItems = 2_000
+
     /// 类别筛选，对应 UI 左侧 sidebar。
     enum Category: String, CaseIterable {
         case all      // 最近：按 created_at 排
@@ -80,7 +82,7 @@ final class ClipboardStore: @unchecked Sendable {
 
     // MARK: - Init
 
-    convenience init(maxItems: Int = 200) throws {
+    convenience init(maxItems: Int = ClipboardStore.defaultMaxItems) throws {
         let url = try Self.defaultDatabaseURL()
         let dbQueue = try DatabaseQueue(path: url.path)
         try self.init(dbQueue: dbQueue, maxItems: maxItems)

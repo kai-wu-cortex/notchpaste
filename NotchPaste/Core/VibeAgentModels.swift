@@ -349,6 +349,8 @@ struct VibeAgentSessionState: Equatable {
         switch status {
         case .waitingForApproval:
             return responseMode == .socket ? .approval : .jump
+        case .waitingForInput where Self.isQuestionEvent(event):
+            return .question
         case .waitingForInput where !questionOptions.isEmpty:
             return .question
         case .waitingForInput:
@@ -358,6 +360,10 @@ struct VibeAgentSessionState: Equatable {
         default:
             return .monitor
         }
+    }
+
+    private static func isQuestionEvent(_ event: String) -> Bool {
+        ["AskUserQuestion", "UserQuestion", "Question"].contains(event)
     }
 
     private static func detail(for event: VibeAgentEvent) -> String {
@@ -458,15 +464,29 @@ final class VibeDashboardSnapshotWriter {
 
 @MainActor
 final class VibeAgentStore: ObservableObject {
-    static let shared = VibeAgentStore(snapshotStore: VibeIslandEventStore.defaultStore())
+    static let shared = VibeAgentStore(
+        snapshotStore: VibeIslandEventStore.defaultStore(),
+        dashboardPublishDelay: 0.08
+    )
 
     @Published private(set) var dashboard: VibeIslandDashboard = .empty
     @Published private(set) var lastAction = "等待 Agent 事件"
     private var sessions: [String: VibeAgentSessionState] = [:]
     private let snapshotWriter: VibeDashboardSnapshotWriter
+    private let dashboardPublishDelay: TimeInterval
+    private var pendingDashboardPublishWork: DispatchWorkItem?
 
-    init(snapshotStore: VibeIslandDashboardSnapshotStore? = nil, snapshotSaveDelay: TimeInterval = 0.25) {
+    init(
+        snapshotStore: VibeIslandDashboardSnapshotStore? = nil,
+        snapshotSaveDelay: TimeInterval = 0.25,
+        dashboardPublishDelay: TimeInterval = 0
+    ) {
+        self.dashboardPublishDelay = dashboardPublishDelay
         snapshotWriter = VibeDashboardSnapshotWriter(store: snapshotStore, delay: snapshotSaveDelay)
+    }
+
+    deinit {
+        pendingDashboardPublishWork?.cancel()
     }
 
     func process(_ event: VibeAgentEvent) {
@@ -475,7 +495,12 @@ final class VibeAgentStore: ObservableObject {
         var session = sessions[key] ?? VibeAgentSessionState(event: event)
         session.apply(event)
         sessions[key] = session
-        rebuildDashboard()
+
+        if event.requiresImmediateDashboardPublish {
+            publishDashboardNow()
+        } else {
+            scheduleDashboardPublish()
+        }
     }
 
     private func removeStaleMismatchedSessions(for event: VibeAgentEvent) {
@@ -512,7 +537,7 @@ final class VibeAgentStore: ObservableObject {
             sessions[key] = session
             lastAction = "\(session.agent.displayName) 需要在 Terminal 确认"
         }
-        rebuildDashboard()
+        publishDashboardNow()
     }
 
     func deny(sessionID: UUID?) {
@@ -533,7 +558,7 @@ final class VibeAgentStore: ObservableObject {
             sessions[key] = session
             lastAction = "\(session.agent.displayName) 需要在 Terminal 确认"
         }
-        rebuildDashboard()
+        publishDashboardNow()
     }
 
     func answerQuestion(sessionID: UUID?, option: String, deliveredToTerminal: Bool) {
@@ -548,7 +573,7 @@ final class VibeAgentStore: ObservableObject {
         lastAction = deliveredToTerminal
             ? "\(session.agent.displayName) 已回答 \(option)"
             : "已复制 \(option)，请在 \(session.terminal) 回车发送"
-        rebuildDashboard()
+        publishDashboardNow()
     }
 
     private func key(for id: UUID?) -> String? {
@@ -556,7 +581,26 @@ final class VibeAgentStore: ObservableObject {
         return sessions.first { $0.value.id == id }?.key
     }
 
-    private func rebuildDashboard() {
+    private func scheduleDashboardPublish() {
+        guard dashboardPublishDelay > 0 else {
+            publishDashboardNow()
+            return
+        }
+
+        pendingDashboardPublishWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.publishDashboardNow()
+            }
+        }
+        pendingDashboardPublishWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + dashboardPublishDelay, execute: work)
+    }
+
+    private func publishDashboardNow() {
+        pendingDashboardPublishWork?.cancel()
+        pendingDashboardPublishWork = nil
+
         let ordered = sessions.values.sorted { $0.lastActivity > $1.lastActivity }
         let terminals = Set(ordered.map(\.terminal).filter { !$0.isEmpty })
 
@@ -588,5 +632,16 @@ final class VibeAgentStore: ObservableObject {
             return min(max(value / 100, 0), 1)
         }
         return 1
+    }
+}
+
+private extension VibeAgentEvent {
+    var requiresImmediateDashboardPublish: Bool {
+        switch status {
+        case .processing, .runningTool, .compacting:
+            return false
+        case .waitingForApproval, .waitingForInput, .completed, .failed, .unknown:
+            return true
+        }
     }
 }

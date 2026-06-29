@@ -9,6 +9,15 @@ enum NotchAnimationTiming {
     static let closeDampingFraction = 1.0
 }
 
+struct NotchHierarchyDebugAdjustment: Equatable {
+    var offsetX: Double = 0
+    var offsetY: Double = 0
+    var widthDelta: Double = 0
+    var heightDelta: Double = 0
+
+    static let zero = NotchHierarchyDebugAdjustment()
+}
+
 /// 刘海窗口的状态机。简化自 vibe-notch (Apache 2.0)：
 /// - .closed：默认；与物理刘海完全同形
 /// - .opened：展开成剪贴板面板
@@ -68,6 +77,13 @@ final class NotchViewModel: ObservableObject {
 
     /// 打开面板时记录的原粘贴目标；粘贴前恢复它，让 ⌘V 注入到正确输入框。
     var previousPasteTarget: PasteTarget?
+
+    /// Debug only: settings 中的 Notch UI 层级树选中节点，用于在主 UI 上临时描边。
+    @Published var highlightedHierarchyNodeID: String?
+
+    /// Debug only: 临时修正层级节点的位置和大小，不持久化；宽高会参与真实 SwiftUI layout。
+    @Published var hierarchyDebugAdjustments: [String: NotchHierarchyDebugAdjustment] = [:]
+    @Published var hierarchyDebugAdjustmentPanelNodeID: String?
 
     // MARK: - Geometry
 
@@ -226,7 +242,10 @@ final class NotchViewModel: ObservableObject {
             }
         }
         deferredPasteTargetWork = work
-        DispatchQueue.main.async(execute: work)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + NotchOpenPerformancePolicy.deferredWorkDelay,
+            execute: work
+        )
     }
 
     func presentAgentInteraction() {

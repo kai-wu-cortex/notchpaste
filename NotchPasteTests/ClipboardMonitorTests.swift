@@ -104,6 +104,53 @@ struct ClipboardMonitorTests {
         }
     }
 
+    @Test("extractItem returns url item for browser public url")
+    func extractBrowserPublicURL() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-public-url"))
+        pb.clearContents()
+        pb.setString("https://example.com/copied", forType: NSPasteboard.PasteboardType("public.url"))
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: "com.google.Chrome")
+
+        if case .url(let raw, let url) = item?.type {
+            #expect(raw == "https://example.com/copied")
+            #expect(url.absoluteString == "https://example.com/copied")
+        } else {
+            Issue.record("Expected .url")
+        }
+    }
+
+    @Test("extractItem returns url item for browser NSURL object")
+    func extractBrowserNSURLObject() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-nsurl"))
+        pb.clearContents()
+        pb.writeObjects([NSURL(string: "https://example.com/object")!])
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: "com.apple.Safari")
+
+        if case .url(let raw, let url) = item?.type {
+            #expect(raw == "https://example.com/object")
+            #expect(url.absoluteString == "https://example.com/object")
+        } else {
+            Issue.record("Expected .url")
+        }
+    }
+
+    @Test("extractItem returns text item for browser utf8 plain text")
+    func extractBrowserUTF8PlainText() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-utf8-text"))
+        pb.clearContents()
+        pb.setString("browser right click text", forType: NSPasteboard.PasteboardType("public.utf8-plain-text"))
+
+        let item = ClipboardMonitor.extractItem(from: pb, sourceAppBundleID: "com.google.Chrome")
+
+        if case .text(let text) = item?.type {
+            #expect(text == "browser right click text")
+        } else {
+            Issue.record("Expected .text")
+        }
+    }
+
     @Test("pending self-write ignore does not swallow later different clipboard content")
     func pendingSelfWriteIgnoreDoesNotSwallowLaterDifferentClipboardContent() {
         let pb = NSPasteboard(name: NSPasteboard.Name("NotchPasteTest-ignore-matching"))

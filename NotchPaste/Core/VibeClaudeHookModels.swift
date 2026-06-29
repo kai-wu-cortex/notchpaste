@@ -34,6 +34,16 @@ struct VibeClaudeHookEvent: Codable, Equatable, Sendable {
     var expectsResponse: Bool {
         event == "PermissionRequest" && status == "waiting_for_approval"
     }
+
+    private var isQuestionEvent: Bool {
+        Self.questionEvents.contains(event)
+    }
+
+    private static let questionEvents: Set<String> = [
+        "AskUserQuestion",
+        "UserQuestion",
+        "Question"
+    ]
 }
 
 struct VibeClaudeHookResponse: Codable, Equatable {
@@ -89,6 +99,8 @@ extension VibeClaudeHookEvent {
     }
 
     private var agentStatus: VibeAgentStatus {
+        if isQuestionEvent { return .waitingForInput }
+
         switch status {
         case "waiting_for_approval": return .waitingForApproval
         case "waiting_for_input": return .waitingForInput
@@ -101,6 +113,10 @@ extension VibeClaudeHookEvent {
     }
 
     private var toolInputSummary: String? {
+        if isQuestionEvent, let message, !message.isEmpty {
+            return message
+        }
+
         guard let toolInput else { return nil }
         let priority = ["file_path", "path", "old_string", "new_string", "command", "description"]
         let ordered = toolInput.sorted { lhs, rhs in

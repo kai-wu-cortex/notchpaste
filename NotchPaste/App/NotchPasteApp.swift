@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenuBar() {
         menuBar = MenuBarController(
+            preferences: prefs,
             onShowPanel: { [weak self] in self?.notchController?.viewModel.notchOpen(reason: .click) },
             onRequestPermission: { [weak self] in self?.forceRequestAccessibility() }
         )

@@ -142,9 +142,67 @@ struct VibeAgentStoreTests {
         ))
 
         #expect(snapshotStore.saveCount == 0)
-        try await Task.sleep(nanoseconds: 120_000_000)
+        try await Task.sleep(nanoseconds: 350_000_000)
         #expect(snapshotStore.saveCount == 1)
         #expect(snapshotStore.latestDashboard?.sessions.first?.detail == "Stop")
+    }
+
+    @Test("agent store coalesces high frequency dashboard publishes")
+    @MainActor
+    func agentStoreCoalescesHighFrequencyDashboardPublishes() async throws {
+        let store = VibeAgentStore(dashboardPublishDelay: 0.05)
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-live",
+            cwd: "/tmp/pasteboard",
+            event: "PreToolUse",
+            status: .runningTool,
+            toolName: "Bash",
+            toolInputSummary: "npm test",
+            createdAt: base
+        ))
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-live",
+            cwd: "/tmp/pasteboard",
+            event: "PostToolUse",
+            status: .processing,
+            toolName: "Bash",
+            toolInputSummary: "8 passed",
+            createdAt: base.addingTimeInterval(1)
+        ))
+
+        #expect(store.dashboard.sessions.isEmpty)
+
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        #expect(store.dashboard.sessions.count == 1)
+        #expect(store.dashboard.sessions.first?.detail == "Bash 8 passed")
+        #expect(store.dashboard.notchActivity == .running)
+    }
+
+    @Test("interactive agent events publish immediately with dashboard coalescing")
+    @MainActor
+    func interactiveAgentEventsPublishImmediatelyWithDashboardCoalescing() {
+        let store = VibeAgentStore(dashboardPublishDelay: 10)
+
+        store.process(VibeAgentEvent(
+            agent: .claude,
+            sessionID: "claude-approval",
+            cwd: "/tmp/pasteboard",
+            event: "PermissionRequest",
+            status: .waitingForApproval,
+            toolName: "Bash",
+            toolInputSummary: "rm temp",
+            approvalID: "tool-1",
+            responseMode: .socket
+        ))
+
+        #expect(store.dashboard.sessions.count == 1)
+        #expect(store.dashboard.notchActivity == .needsInteraction)
+        #expect(store.dashboard.sessions.first?.action == .approval)
     }
 
     @Test("usage meters aggregate by agent and include Codex usage")

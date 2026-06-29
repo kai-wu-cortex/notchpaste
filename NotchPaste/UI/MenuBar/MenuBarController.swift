@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// 菜单栏图标 + 下拉菜单。常驻显示，提供"显示面板/重新申请权限/退出"等总入口。
 ///
@@ -6,26 +7,53 @@ import AppKit
 @MainActor
 final class MenuBarController {
 
-    private let statusItem: NSStatusItem
+    private var statusItem: NSStatusItem?
+    private let preferences: PreferencesStore
     private let onShowPanel: () -> Void
     private let onRequestPermission: () -> Void
+    private var cancellables = Set<AnyCancellable>()
 
     init(
+        preferences: PreferencesStore = .shared,
         onShowPanel: @escaping () -> Void,
         onRequestPermission: @escaping () -> Void
     ) {
+        self.preferences = preferences
         self.onShowPanel = onShowPanel
         self.onRequestPermission = onRequestPermission
 
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem.button {
+        syncStatusItemVisibility(preferences.showMenuBarIcon)
+
+        preferences.$showMenuBarIcon
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] show in
+                self?.syncStatusItemVisibility(show)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func syncStatusItemVisibility(_ show: Bool) {
+        if show {
+            guard statusItem == nil else { return }
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            configure(item)
+            statusItem = item
+        } else if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
+
+    private func configure(_ item: NSStatusItem) {
+        if let button = item.button {
             button.image = NSImage(
                 systemSymbolName: "doc.on.clipboard",
                 accessibilityDescription: "NotchPaste"
             )
             button.image?.isTemplate = true
         }
-        statusItem.menu = makeMenu()
+        item.menu = makeMenu()
     }
 
     private func makeMenu() -> NSMenu {
@@ -39,6 +67,14 @@ final class MenuBarController {
         show.keyEquivalentModifierMask = [.command, .shift]
         show.target = self
         menu.addItem(show)
+
+        let hideIcon = NSMenuItem(
+            title: "隐藏菜单栏图标",
+            action: #selector(hideMenuBarIconAction),
+            keyEquivalent: ""
+        )
+        hideIcon.target = self
+        menu.addItem(hideIcon)
 
         menu.addItem(.separator())
 
@@ -69,6 +105,10 @@ final class MenuBarController {
 
     @objc private func requestPermissionAction() {
         onRequestPermission()
+    }
+
+    @objc private func hideMenuBarIconAction() {
+        preferences.showMenuBarIcon = false
     }
 
     @objc private func quitAction() {

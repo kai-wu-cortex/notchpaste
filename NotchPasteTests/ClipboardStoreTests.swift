@@ -8,7 +8,7 @@ import GRDB
 struct ClipboardStoreTests {
 
     /// 给每个测试一个隔离的内存 DB。
-    func makeStore(maxItems: Int = 200, snapshotDelay: TimeInterval = 0.02) throws -> ClipboardStore {
+    func makeStore(maxItems: Int = ClipboardStore.defaultMaxItems, snapshotDelay: TimeInterval = 0.02) throws -> ClipboardStore {
         let dbQueue = try DatabaseQueue() // in-memory
         return try ClipboardStore(dbQueue: dbQueue, maxItems: maxItems, snapshotDelay: snapshotDelay)
     }
@@ -88,6 +88,23 @@ struct ClipboardStoreTests {
         #expect(items.count == 3)
         // newest first: 4, 3, 2 — 0 and 1 dropped
         #expect(items.map { if case .text(let s) = $0.type { return s } else { return "" } } == ["4", "3", "2"])
+    }
+
+    @Test("default capacity is larger than visible clipboard list count")
+    func defaultCapacityIsLargerThanVisibleClipboardListCount() throws {
+        let store = try makeStore()
+        for i in 0..<250 {
+            let item = ClipboardItem(
+                id: UUID(),
+                type: .text("default capacity \(i)"),
+                createdAt: Date(timeIntervalSince1970: TimeInterval(i)),
+                pinned: false,
+                sourceAppBundleID: nil
+            )
+            try store.add(item)
+        }
+
+        #expect(try store.allItems().count == 250)
     }
 
     @Test("duplicate text moves existing to top instead of adding new row")

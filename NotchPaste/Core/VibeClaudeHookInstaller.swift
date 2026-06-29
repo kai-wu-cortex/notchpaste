@@ -81,6 +81,7 @@ enum VibeClaudeHookInstaller {
             ("PreToolUse", withMatcher),
             ("PostToolUse", withMatcher),
             ("PermissionRequest", withMatcherAndTimeout),
+            ("AskUserQuestion", withoutMatcher),
             ("Notification", withMatcher),
             ("Stop", withoutMatcher),
             ("SubagentStop", withoutMatcher),
@@ -196,6 +197,33 @@ enum VibeClaudeHookInstaller {
                     return data.get(name)
             return default
 
+        def string_list(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                result = []
+                for item in value:
+                    if isinstance(item, dict):
+                        label = first_value(item, ["label", "title", "text", "value", "name", "description"])
+                        if label is not None:
+                            result.append(str(label))
+                    else:
+                        result.append(str(item))
+                return result
+            return [str(value)]
+
+        def question_options(data):
+            direct = first_value(data, ["question_options", "questionOptions", "options", "choices", "answers"])
+            if direct is not None:
+                return string_list(direct)
+
+            tool_input = data.get("tool_input", {})
+            if isinstance(tool_input, dict):
+                nested = first_value(tool_input, ["question_options", "questionOptions", "options", "choices", "answers"])
+                if nested is not None:
+                    return string_list(nested)
+            return []
+
         def main():
             try:
                 data = json.load(sys.stdin)
@@ -239,6 +267,18 @@ enum VibeClaudeHookInstaller {
                     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": response.get("reason") or "Denied by NotchPaste"}}}))
                     sys.exit(0)
                 sys.exit(0)
+            elif event in ("AskUserQuestion", "UserQuestion", "Question"):
+                state["status"] = "waiting_for_input"
+                state["tool"] = data.get("tool_name") or event
+                state["tool_input"] = data.get("tool_input", {})
+                state["question_options"] = question_options(data)
+                state["message"] = first_value(
+                    data,
+                    ["message", "prompt", "text", "output", "response", "content", "assistant_message", "assistantMessage"]
+                ) or first_value(
+                    state["tool_input"],
+                    ["message", "prompt", "text", "question", "description"]
+                )
             elif event == "Notification":
                 if data.get("notification_type") == "permission_prompt":
                     sys.exit(0)
