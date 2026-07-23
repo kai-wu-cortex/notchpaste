@@ -128,6 +128,51 @@ struct VibeIslandDashboardTests {
         }
     }
 
+    @Test("active session count excludes stopped monitor rows")
+    func activeSessionCountExcludesStoppedMonitorRows() {
+        let running = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "pasteboard",
+            detail: "Bash npm test",
+            elapsed: "live",
+            state: "Running Tool",
+            action: .monitor,
+            tint: .cyan
+        )
+        let stopped = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "/",
+            detail: "Stop",
+            elapsed: "live",
+            state: "Completed",
+            action: .monitor,
+            tint: .cyan
+        )
+        let waiting = VibeSession(
+            agent: "Claude",
+            terminal: "Terminal",
+            title: "needs-input",
+            detail: "Choose target",
+            elapsed: "live",
+            state: "Waiting for input",
+            action: .question,
+            tint: .orange
+        )
+        let dashboard = VibeIslandDashboard(
+            supportedAgentCount: 2,
+            supportedTerminalCount: 1,
+            sessions: [stopped, running, waiting],
+            question: nil,
+            planReview: VibePlanReview(title: "", summary: "", points: []),
+            usageMeters: [],
+            supportedAgents: ["Codex", "Claude"]
+        )
+
+        #expect(dashboard.activeSessionCount == 2)
+    }
+
     @Test("notch diff prefers pending session and falls back to latest diff")
     func notchDiffPrefersPendingSessionAndFallsBackToLatestDiff() {
         let fallbackDiff = [VibeCodeDiffLine("+ fallback", style: .added)]
@@ -300,6 +345,22 @@ struct VibeIslandDashboardTests {
 
         #expect(completed?.primaryActionTitle == "Jump")
         #expect(completed?.terminal == "iTerm")
+    }
+
+    @Test("monitor session primary action jumps to terminal")
+    func monitorSessionPrimaryActionJumpsToTerminal() {
+        let monitor = VibeSession(
+            agent: "Codex",
+            terminal: "Terminal",
+            title: "pasteboard",
+            detail: "Running Tool",
+            elapsed: "live",
+            state: "Running Tool",
+            action: .monitor,
+            tint: .cyan
+        )
+
+        #expect(monitor.primaryActionTitle == "Jump")
     }
 
     @Test("allow updates approval session and local feedback")

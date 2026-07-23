@@ -59,6 +59,7 @@ extension VibeGeminiHookEvent {
 
     private var agentStatus: VibeAgentStatus {
         switch status {
+        case "idle", "ready": return .idle
         case "waiting_for_approval": return .waitingForApproval
         case "waiting_for_input": return .waitingForInput
         case "running_tool": return .runningTool

@@ -24,6 +24,7 @@ enum VibeAgentKind: String, Codable, Equatable, CaseIterable {
 }
 
 enum VibeAgentStatus: String, Codable, Equatable {
+    case idle
     case processing
     case runningTool
     case waitingForApproval
@@ -35,6 +36,7 @@ enum VibeAgentStatus: String, Codable, Equatable {
 
     var stateLabel: String {
         switch self {
+        case .idle: return "Ready"
         case .processing: return "Processing"
         case .runningTool: return "Running Tool"
         case .waitingForApproval: return "Permission Request"
@@ -284,7 +286,7 @@ struct VibeAgentSessionState: Equatable {
         terminal = event.terminal
         terminalProcessID = event.terminalProcessID
         self.event = event.event
-        status = event.status
+        status = Self.normalizedStatus(for: event)
         title = URL(fileURLWithPath: event.cwd).lastPathComponent
         detail = Self.detail(for: event)
         stateOverride = nil
@@ -302,7 +304,7 @@ struct VibeAgentSessionState: Equatable {
         terminal = event.terminal
         terminalProcessID = event.terminalProcessID
         self.event = event.event
-        status = event.status
+        status = Self.normalizedStatus(for: event)
         title = URL(fileURLWithPath: event.cwd).lastPathComponent
         detail = Self.detail(for: event)
         stateOverride = nil
@@ -331,7 +333,7 @@ struct VibeAgentSessionState: Equatable {
             terminalProcessID: terminalProcessID,
             title: title.isEmpty ? agent.displayName : title,
             detail: detail,
-            elapsed: "live",
+            elapsed: elapsedLabel,
             state: stateOverride ?? status.stateLabel,
             action: action,
             tint: agent.tint,
@@ -343,6 +345,32 @@ struct VibeAgentSessionState: Equatable {
             questionOptions: questionOptions,
             history: history
         )
+    }
+
+    var countsAsActiveForNotch: Bool {
+        switch status {
+        case .processing, .runningTool, .waitingForApproval, .compacting:
+            return true
+        case .waitingForInput:
+            return action == .question || action == .jump
+        case .idle, .completed, .failed, .unknown:
+            return false
+        }
+    }
+
+    private var elapsedLabel: String {
+        switch status {
+        case .idle:
+            return ""
+        case .completed:
+            return "done"
+        case .failed:
+            return "failed"
+        case .unknown:
+            return ""
+        default:
+            return usageLabel ?? "live"
+        }
     }
 
     private var action: VibeSessionAction {
@@ -364,6 +392,39 @@ struct VibeAgentSessionState: Equatable {
 
     private static func isQuestionEvent(_ event: String) -> Bool {
         ["AskUserQuestion", "UserQuestion", "Question"].contains(event)
+    }
+
+    private static func normalizedStatus(for event: VibeAgentEvent) -> VibeAgentStatus {
+        switch event.event {
+        case "SessionStart":
+            return .idle
+        case "Stop", "SessionEnd":
+            return .completed
+        case "StopFailure":
+            return .failed
+        default:
+            if event.event == "Notification",
+               event.status == .waitingForInput,
+               isStopMessage(event.question) {
+                return .completed
+            }
+            if event.event == "UserPromptSubmit",
+               event.agent == .codex,
+               isCodexAmbientSuggestionPrompt(event.question) {
+                return .idle
+            }
+            return event.status
+        }
+    }
+
+    private static func isStopMessage(_ message: String?) -> Bool {
+        let value = message?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "stop" || value == "sessionend" || value == "session end"
+    }
+
+    private static func isCodexAmbientSuggestionPrompt(_ message: String?) -> Bool {
+        let value = message?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value?.contains("codex ambient suggestions") == true
     }
 
     private static func detail(for event: VibeAgentEvent) -> String {
@@ -619,7 +680,9 @@ final class VibeAgentStore: ObservableObject {
 
     private func usageMeters(from ordered: [VibeAgentSessionState]) -> [VibeUsageMeter] {
         VibeAgentKind.allCases.compactMap { agent in
-            guard let session = ordered.first(where: { $0.agent == agent }) else { return nil }
+            guard let session = ordered.first(where: { $0.agent == agent && $0.countsAsActiveForNotch }) else {
+                return nil
+            }
             let label = session.usageLabel ?? "live"
             return VibeUsageMeter(agent: agent.displayName, remaining: remaining(from: label), label: label)
         }
@@ -640,7 +703,7 @@ private extension VibeAgentEvent {
         switch status {
         case .processing, .runningTool, .compacting:
             return false
-        case .waitingForApproval, .waitingForInput, .completed, .failed, .unknown:
+        case .idle, .waitingForApproval, .waitingForInput, .completed, .failed, .unknown:
             return true
         }
     }

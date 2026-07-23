@@ -1712,9 +1712,9 @@ private struct NotchUIHierarchyDebugPanelView: View {
         case .idle:
             return "idle"
         case .running:
-            return "running \(vibeStore.dashboard.sessions.count)"
+            return "running \(vibeStore.dashboard.activeSessionCount)"
         case .needsInteraction:
-            return "needs input \(vibeStore.dashboard.sessions.count)"
+            return "needs input \(vibeStore.dashboard.activeSessionCount)"
         }
     }
 

@@ -146,7 +146,7 @@ private struct AgentActivitySnapshot: Equatable {
 
     init(dashboard: VibeIslandDashboard) {
         activity = dashboard.notchActivity
-        sessionCount = dashboard.sessions.count
+        sessionCount = dashboard.activeSessionCount
     }
 }
 
@@ -409,7 +409,7 @@ struct NotchView: View {
         let store = VibeAgentStore.shared
         applyAgentSnapshot(
             activity: store.dashboard.notchActivity,
-            sessionCount: store.dashboard.sessions.count,
+            sessionCount: store.dashboard.activeSessionCount,
             animated: false
         )
         agentActivitySubscription = store.$dashboard

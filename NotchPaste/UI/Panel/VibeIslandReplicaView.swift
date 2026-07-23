@@ -85,6 +85,10 @@ struct VibeIslandDashboard {
         return .idle
     }
 
+    var activeSessionCount: Int {
+        sessions.filter(\.countsAsActiveForNotch).count
+    }
+
     func notchCodeDiff(preferredSessionID: UUID?) -> [VibeCodeDiffLine] {
         if let preferredSessionID,
            let preferred = sessions.first(where: { $0.id == preferredSessionID }),
@@ -170,7 +174,7 @@ struct VibeSession: Identifiable {
         case .approval: return VibeApprovalAction.allowOnce.title
         case .question: return "Reply"
         case .jump: return "Jump"
-        case .monitor: return "Open"
+        case .monitor: return "Jump"
         }
     }
 
@@ -203,6 +207,10 @@ struct VibeSession: Identifiable {
             "需要终端确认"
         ]
         return !inactiveStates.contains(state)
+    }
+
+    var countsAsActiveForNotch: Bool {
+        action == .approval || action == .question || needsJumpAttention || isRunningMonitor
     }
 }
 
@@ -399,6 +407,7 @@ struct VibeNativeSessionRow: Identifiable {
     let usageLabel: String?
     let tint: Color
     let isWaitingForApproval: Bool
+    let action: VibeSessionAction
     let primaryActionTitle: String
     let secondaryActionTitle: String?
     let codeDiff: [VibeCodeDiffLine]
@@ -416,6 +425,7 @@ struct VibeNativeSessionRow: Identifiable {
         self.usageLabel = usageLabel
         tint = session.tint
         isWaitingForApproval = session.action == .approval
+        action = session.action
         primaryActionTitle = session.primaryActionTitle
         secondaryActionTitle = session.secondaryActionTitle
         codeDiff = session.codeDiff
@@ -499,7 +509,9 @@ final class VibeIslandDashboardModel: ObservableObject {
         dashboard.sessions.map { session in
             VibeNativeSessionRow(
                 session: session,
-                usageLabel: dashboard.usageMeters.first { $0.agent == session.agent }?.label
+                usageLabel: session.countsAsActiveForNotch
+                    ? dashboard.usageMeters.first { $0.agent == session.agent }?.label
+                    : nil
             )
         }
     }
@@ -1528,7 +1540,7 @@ struct VibeIslandReplicaView: View {
             Text("✢")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(TerminalPalette.amber)
-        } else if row.state == "Ready" || row.state == "Completed" || row.primaryActionTitle == "Jump" {
+        } else if row.state == "Ready" || row.state == "Completed" || row.action == .jump {
             Circle()
                 .fill(TerminalPalette.green)
                 .frame(width: 6, height: 6)

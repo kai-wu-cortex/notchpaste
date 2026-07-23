@@ -85,9 +85,9 @@ struct VibeAgentStoreTests {
         #expect(store.dashboard.sessions.first?.state == "需要终端确认")
     }
 
-    @Test("agent store saves dashboard snapshot for idle session recovery")
+    @Test("agent store saves stopped session snapshot as inactive")
     @MainActor
-    func agentStoreSavesDashboardSnapshotForIdleSessionRecovery() throws {
+    func agentStoreSavesStoppedSessionSnapshotAsInactive() throws {
         let dir = try temporaryDirectory()
         let snapshotStore = VibeIslandEventStore(directory: dir)
         let store = VibeAgentStore(snapshotStore: snapshotStore, snapshotSaveDelay: 0)
@@ -105,7 +105,9 @@ struct VibeAgentStoreTests {
         let restored = try snapshotStore.loadDashboard()
         #expect(restored.sessions.map(\.agent) == ["Claude"])
         #expect(restored.sessions.first?.title == "pasteboard")
-        #expect(restored.sessions.first?.action == .jump)
+        #expect(restored.sessions.first?.state == "Completed")
+        #expect(restored.sessions.first?.action == .monitor)
+        #expect(restored.activeSessionCount == 0)
     }
 
     @Test("agent store coalesces rapid dashboard snapshot writes")
@@ -145,6 +147,8 @@ struct VibeAgentStoreTests {
         try await Task.sleep(nanoseconds: 350_000_000)
         #expect(snapshotStore.saveCount == 1)
         #expect(snapshotStore.latestDashboard?.sessions.first?.detail == "Stop")
+        #expect(snapshotStore.latestDashboard?.sessions.first?.state == "Completed")
+        #expect(snapshotStore.latestDashboard?.activeSessionCount == 0)
     }
 
     @Test("agent store coalesces high frequency dashboard publishes")
@@ -313,6 +317,73 @@ struct VibeAgentStoreTests {
         #expect(store.dashboard.sessions.first?.state == "Completed")
         #expect(store.dashboard.sessions.first?.action == .monitor)
         #expect(store.dashboard.notchActivity == .idle)
+        #expect(store.dashboard.activeSessionCount == 0)
+    }
+
+    @Test("stop event reported as waiting input is not active")
+    @MainActor
+    func stopEventReportedAsWaitingInputIsNotActive() {
+        let store = VibeAgentStore()
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-stop",
+            cwd: "/tmp/codex-app",
+            terminal: "Terminal",
+            event: "PreToolUse",
+            status: .runningTool,
+            toolName: "Bash",
+            toolInputSummary: "npm test",
+            usageLabel: "live",
+            createdAt: base
+        ))
+
+        #expect(store.dashboard.activeSessionCount == 1)
+        #expect(store.dashboard.usageMeters.map(\.agent) == ["Codex"])
+
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-stop",
+            cwd: "/tmp/codex-app",
+            terminal: "Terminal",
+            event: "Stop",
+            status: .waitingForInput,
+            question: "Stop",
+            usageLabel: "live",
+            createdAt: base.addingTimeInterval(1)
+        ))
+
+        #expect(store.dashboard.sessions.first?.state == "Completed")
+        #expect(store.dashboard.sessions.first?.action == .monitor)
+        #expect(store.dashboard.activeSessionCount == 0)
+        #expect(store.dashboard.notchActivity == .idle)
+        #expect(store.dashboard.usageMeters.isEmpty)
+    }
+
+    @Test("stop notification reported as waiting input is not active")
+    @MainActor
+    func stopNotificationReportedAsWaitingInputIsNotActive() {
+        let store = VibeAgentStore()
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-stop",
+            cwd: "/tmp/codex-app",
+            terminal: "Terminal",
+            event: "Notification",
+            status: .waitingForInput,
+            question: "Stop",
+            usageLabel: "live",
+            createdAt: base
+        ))
+
+        #expect(store.dashboard.sessions.first?.state == "Completed")
+        #expect(store.dashboard.sessions.first?.action == .monitor)
+        #expect(store.dashboard.activeSessionCount == 0)
+        #expect(store.dashboard.notchActivity == .idle)
+        #expect(store.dashboard.usageMeters.isEmpty)
     }
 
     @Test("failed event stays visible without jump action")
@@ -375,6 +446,40 @@ struct VibeAgentStoreTests {
         let events = store.dashboard.sessions.first?.history ?? []
         #expect(events.map(\.kind) == [.userInput, .processing, .agentOutput])
         #expect(events.map(\.message) == ["修复 Jump 显示错误", "Bash xcodebuild test", "测试通过，等待确认"])
+    }
+
+    @Test("codex ambient suggestion startup is idle not processing")
+    @MainActor
+    func codexAmbientSuggestionStartupIsIdleNotProcessing() {
+        let store = VibeAgentStore()
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-ambient",
+            cwd: "/",
+            terminal: "Terminal",
+            event: "SessionStart",
+            status: .processing,
+            createdAt: base
+        ))
+        store.process(VibeAgentEvent(
+            agent: .codex,
+            sessionID: "codex-ambient",
+            cwd: "/",
+            terminal: "Terminal",
+            event: "UserPromptSubmit",
+            status: .processing,
+            question: "You are an expert at upholding safety and compliance standards for Codex ambient suggestions.",
+            createdAt: base.addingTimeInterval(1)
+        ))
+
+        let session = store.dashboard.sessions.first
+        #expect(session?.state == "Ready")
+        #expect(session?.action == .monitor)
+        #expect(session?.primaryActionTitle == "Jump")
+        #expect(store.dashboard.activeSessionCount == 0)
+        #expect(store.dashboard.notchActivity == .idle)
     }
 
     @Test("edit tool input becomes code diff in session history")

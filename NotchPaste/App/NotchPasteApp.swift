@@ -106,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onRequestPermission: { [weak self] in self?.forceRequestAccessibility() },
             onQuit: { NSApp.terminate(nil) }
         )
+        syncClipboardItemCount()
         notchController.showWindow(nil)
         AppLogger.app.info("Notch window set up on screen \(screen.localizedName, privacy: .public)")
     }
@@ -200,5 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func forceRequestAccessibility() {
         paster.requestAccessibilityAndOpenPreferences()
+    }
+
+    private func syncClipboardItemCount() {
+        notchController?.viewModel.itemCount = (try? store.totalItemCount()) ?? panelVM.items.count
     }
 }

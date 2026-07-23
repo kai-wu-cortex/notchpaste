@@ -107,6 +107,16 @@ struct ClipboardStoreTests {
         #expect(try store.allItems().count == 250)
     }
 
+    @Test("total item count reads persisted rows without relying on the visible list")
+    func totalItemCountReadsPersistedRows() throws {
+        let store = try makeStore(snapshotDelay: 10)
+        try store.add(ClipboardItem.text("count one"))
+        try store.add(ClipboardItem.text("count two"))
+        try store.add(ClipboardItem.text("count three"))
+
+        #expect(try store.totalItemCount() == 3)
+    }
+
     @Test("duplicate text moves existing to top instead of adding new row")
     func duplicateTextDedup() throws {
         let store = try makeStore()

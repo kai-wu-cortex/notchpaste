@@ -231,6 +231,11 @@ final class ClipboardStore: @unchecked Sendable {
         try fetchAllItems()
     }
 
+    /// 返回数据库中持久化的历史总数。用于 UI 标题计数，避免窗口重建或列表延迟加载时短暂显示 0。
+    func totalItemCount() throws -> Int {
+        try fetchTotalItemCount()
+    }
+
     /// 按类别 + 搜索词查询。
     /// .all → newest first；.favorite → usage 多的在前（仅 usage_count > 0）；
     /// 其它 → 该 kind 的 newest first。
@@ -327,6 +332,12 @@ final class ClipboardStore: @unchecked Sendable {
                 ORDER BY created_at DESC
                 """)
             return rows.compactMap(Self.itemFromRow)
+        }
+    }
+
+    private func fetchTotalItemCount() throws -> Int {
+        try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clipboard_item") ?? 0
         }
     }
 
